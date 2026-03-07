@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenClaw 控制中枢</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="./index.css">
+</head>
+
+<body>
+    <div class="dashboard-container">
+        <!-- Zone 1: 顶部状态栏 -->
+        <header class="header glass-panel animate-up">
+            <div class="title-area">
+                <h1><i class="fa-solid fa-spider"></i> <span data-i18n="app_title">OpenClaw Hub</span></h1>
+            </div>
+            <div class="sys-status" style="display: flex; gap: 24px;">
+                <div style="display:flex; gap:16px; align-items:center; margin-right: 16px;">
+                    <button id="theme-toggle" class="icon-btn" title="Toggle Theme"
+                        style="background:transparent;border:none;cursor:pointer;color:var(--text-primary);font-size:1.2rem;"><i
+                            class="fas fa-moon"></i></button>
+                    <button id="lang-toggle" class="icon-btn" title="Switch Language"
+                        style="background:transparent;border:none;cursor:pointer;color:var(--text-primary);font-weight:bold;">中/En</button>
+                </div>
+                <div style="text-align: right">
+                    <div style="font-size: 0.8rem; color: var(--text-secondary)" data-i18n="gateway_port">Gateway Port
+                    </div>
+                    <div style="color: var(--accent-green); font-weight: 600"><i class="fa-solid fa-circle-check"></i>
+                        18789 Active</div>
+                </div>
+                <div style="text-align: right">
+                    <div style="font-size: 0.8rem; color: var(--text-secondary)" data-i18n="uptime">Uptime</div>
+                    <div id="uptimeDisplay" style="font-family: 'JetBrains Mono', monospace">7d 04h 22m</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- 左侧边栏: Command & LLM Config -->
+        <aside class="sidebar animate-up delay-1">
+            <!-- Zone 2: 动作命令中枢 -->
+            <div class="glass-panel">
+                <div class="section-title" style="padding: 20px 20px 0;"><i class="fa-solid fa-bolt"></i> <span
+                        data-i18n="quick_control">快速控制</span></div>
+                <div class="control-grid">
+                    <button class="cmd-btn"
+                        style="background: rgba(59, 130, 246, 0.4); border-color: rgba(59, 130, 246, 0.6);"
+                        onclick="openWebUI()">
+                        <i class="fa-solid fa-up-right-from-square"></i> <span>进入 OpenClaw WebUI</span>
+                    </button>
+                    <button class="cmd-btn restart" onclick="triggerCommand('restart')"
+                        title="警告：重启会重置通讯秘钥，可能导致原标签页报错认证失败！">
+                        <i class="fa-solid fa-rotate"></i> <span data-i18n="restart_gateway">重启 OpenClaw</span>
+                    </button>
+                    <button class="cmd-btn upgrade" onclick="triggerCommand('upgrade')">
+                        <i class="fa-solid fa-arrow-up-right-dots"></i> <span data-i18n="check_upgrade">检查版本升级</span>
+                    </button>
+                    <button class="cmd-btn shutdown" onclick="triggerCommand('shutdown')">
+                        <i class="fa-solid fa-power-off"></i> <span data-i18n="stop_service">停止服务</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Zone 5: 大模型接口配置 -->
+            <div class="glass-panel llm-config" style="flex: 1; display:flex; flex-direction:column;">
+                <div class="section-title" style="flex-shrink:0;">
+                    <i class="fa-solid fa-microchip"></i> <span data-i18n="llm_config">大模型接入商配置</span>
+                </div>
+
+                <div
+                    style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 12px; flex-shrink:0;">
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0;" data-i18n="provider_desc">
+                        配置不同供应商 API 以供 Agent 分配不同的大模型。
+                    </p>
+                    <button class="icon-btn"
+                        style="background:transparent;border:none;color:var(--accent-blue);cursor:pointer;font-size:0.8rem;white-space:nowrap;display:flex;align-items:center;gap:4px;"
+                        onclick="addProviderPrompt()"><i class="fas fa-plus"></i><span
+                            data-i18n="create_provider">新增供应商</span></button>
+                </div>
+
+                <div id="providers-accordion-container"
+                    style="flex:1; display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto; padding-right: 4px;">
+                    <!-- JS renders Accordion -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- 新增 API 供应商模态框 -->
+        <div id="add-provider-modal" class="modal-overlay" style="display:none;">
+            <div class="glass-panel modal-content"
+                style="padding: 24px; max-width: 400px; width: 100%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000;">
+                <h3 style="margin-bottom: 16px;" data-i18n="create_provider_title">创建新 Provider</h3>
+                <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
+                    <div>
+                        <label
+                            style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block"
+                            data-i18n="provider_id">Provider 名 (不可包含空格，如 deepseek)</label>
+                        <input type="text" class="config-input" id="new-provider-name"
+                            placeholder="e.g. openai, anthropic">
+                    </div>
+                    <div>
+                        <label
+                            style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block"
+                            data-i18n="provider_url">Base URL</label>
+                        <input type="text" class="config-input" id="new-provider-url"
+                            placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div>
+                        <label
+                            style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block"
+                            data-i18n="provider_key">API Key</label>
+                        <input type="password" class="config-input" id="new-provider-key" placeholder="sk-...">
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap: 12px;">
+                    <button class="cmd-btn" onclick="document.getElementById('add-provider-modal').style.display='none'"
+                        data-i18n="cancel">取消</button>
+                    <button class="save-btn" onclick="confirmAddProvider()" data-i18n="confirm">确定</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模型穿梭框选择 Modal -->
+        <div class="modal-overlay" id="model-select-modal" style="display:none;">
+            <div class="glass-panel modal-content"
+                style="max-width: 800px; width: 90%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; padding: 24px;">
+                <h3 style="margin-bottom: 20px;"><i class="fa-solid fa-list-check text-blue-500"></i> 管理与添加供应商模型</h3>
+
+                <div style="display: flex; gap: 16px; align-items: stretch; height: 350px;">
+
+                    <!-- 左侧：已保存的模型 (生效中) -->
+                    <div
+                        style="flex: 1; display: flex; flex-direction: column; background: var(--bg-accent); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+                        <h4 style="margin-bottom: 8px; color: var(--accent-green);"><i
+                                class="fa-solid fa-hard-drive"></i> 已保存的模型 (生效中)</h4>
+                        <input type="text" class="config-input" id="left-search" placeholder="搜索已存模型..."
+                            onkeyup="renderTransfer()" style="margin-bottom: 8px; padding: 6px;">
+                        <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                            <button class="cmd-btn" style="flex:1; padding: 4px; font-size: 0.75rem;"
+                                onclick="transferSelectAll('left')">全选</button>
+                            <button class="cmd-btn" style="flex:1; padding: 4px; font-size: 0.75rem;"
+                                onclick="transferInvert('left')">反选</button>
+                        </div>
+                        <div id="left-list" class="checkbox-list"
+                            style="flex: 1; overflow-y: auto; overflow-x: hidden;">
+                            <!-- JS Inject -->
+                        </div>
+                    </div>
+
+                    <!-- 中间：操作按钮 -->
+                    <div
+                        style="display: flex; flex-direction: column; justify-content: center; gap: 12px; padding: 0 4px;">
+                        <button class="cmd-btn" onclick="moveSelectedToLeft()" title="将右侧选中项移入左侧"
+                            style="padding: 8px 16px; background: rgba(59, 130, 246, 0.2);"><i
+                                class="fa-solid fa-chevron-left"></i> 添加</button>
+                        <button class="cmd-btn" onclick="moveSelectedToRight()" title="将左侧选中项移出"
+                            style="padding: 8px 16px; background: rgba(239, 68, 68, 0.2);"><i
+                                class="fa-solid fa-chevron-right"></i> 移除</button>
+                    </div>
+
+                    <!-- 右侧：探测到的新模型 (待选项) -->
+                    <div
+                        style="flex: 1; display: flex; flex-direction: column; background: var(--bg-accent); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+                        <h4 style="margin-bottom: 8px; color: var(--accent-blue);"><i
+                                class="fa-solid fa-satellite-dish"></i> 探测到的新模型 (待添加)</h4>
+                        <input type="text" class="config-input" id="right-search" placeholder="搜索新模型..."
+                            onkeyup="renderTransfer()" style="margin-bottom: 8px; padding: 6px;">
+                        <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                            <button class="cmd-btn" style="flex:1; padding: 4px; font-size: 0.75rem;"
+                                onclick="transferSelectAll('right')">全选</button>
+                            <button class="cmd-btn" style="flex:1; padding: 4px; font-size: 0.75rem;"
+                                onclick="transferInvert('right')">反选</button>
+                        </div>
+                        <div id="right-list" class="checkbox-list"
+                            style="flex: 1; overflow-y: auto; overflow-x: hidden;">
+                            <!-- JS Inject -->
+                        </div>
+                    </div>
+
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items: center; margin-top: 20px;">
+                    <span style="font-size: 0.8rem; color: var(--text-secondary);"><i
+                            class="fa-solid fa-circle-info"></i> 保存后左侧列表的模型将生效。</span>
+                    <div style="display:flex; gap: 12px;">
+                        <button class="cmd-btn" onclick="closeModelModal()">取消</button>
+                        <button class="save-btn" onclick="submitTransferModels()">确认并保存</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容区 -->
+        <main class="main-content animate-up delay-2">
+            <!-- 系统监控 -->
+            <div class="sys-metrics">
+                <div class="glass-panel metric-card">
+                    <div class="metric-header">
+                        <span><i class="fa-solid fa-microchip text-blue-500"></i> <span data-i18n="cpu_load">CPU
+                                负载</span></span>
+                        <span id="cpu-text">--%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="cpu-bar" class="progress-fill fill-blue" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="glass-panel metric-card">
+                    <div class="metric-header">
+                        <span><i class="fa-solid fa-memory text-purple-500"></i> <span
+                                data-i18n="mem_usage">内存占用</span></span>
+                        <span id="mem-text">-- GB / -- GB</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="mem-bar" class="progress-fill fill-purple" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="glass-panel metric-card">
+                    <div class="metric-header">
+                        <span><i class="fa-solid fa-hard-drive text-green-500"></i> <span
+                                data-i18n="disk_usage">存储使用率</span></span>
+                        <span id="disk-text">-- GB / -- GB (0%)</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="disk-bar" class="progress-fill fill-green" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="glass-panel metric-card">
+                    <div class="metric-header">
+                        <span><i class="fa-solid fa-users text-orange-500"></i> <span
+                                data-i18n="active_agents">活跃子代理</span></span>
+                        <span id="agents-text">- / - 槽位</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div id="agents-bar" class="progress-fill fill-blue" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Zone 3: 蜂巢代理追踪 -->
+            <div class="glass-panel agent-matrix">
+                <div class="section-title">
+                    <i class="fa-solid fa-network-wired"></i> <span data-i18n="agent_matrix">蜂巢代理矩阵 (Agent
+                        Matrix)</span>
+                </div>
+                <div class="matrix-grid" id="agent-grid">
+                    <!-- Cards will be populated by JS -->
+                </div>
+            </div>
+
+            <!-- Zone 4: 终端情报站 -->
+            <div class="glass-panel terminal-zone animate-up delay-3">
+                <div class="terminal-header">
+                    <div class="terminal-tabs">
+                        <div class="terminal-tab active" data-i18n="sys_logs">System Logs (app.log)</div>
+                        <div class="terminal-tab">Agent: Evolution</div>
+                        <div class="terminal-tab">Agent: Main</div>
+                    </div>
+                    <div class="terminal-actions">
+                        <i class="fa-solid fa-trash" style="cursor: pointer;" title="Clear"></i>
+                        <i class="fa-solid fa-down-long" style="cursor: pointer; margin-left:12px" title="Auto-scroll"
+                            id="scroll-lock"></i>
+                    </div>
+                </div>
+                <div class="terminal-output" id="terminal-output">
+                    <!-- Logs populated by JS -->
+                    <div class="log-line">
+                        <span class="log-time">[2026-03-07 00:15:22]</span>
+                        <span class="log-info">[INFO]</span>
+                        <span>OpenClaw Dashboard Initialized.</span>
+                    </div>
+                    <div class="log-line">
+                        <span class="log-time">[2026-03-07 00:15:23]</span>
+                        <span class="log-info">[INFO]</span>
+                        <span>Connecting to local socket for state sync...</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="./app.js"></script>
+</body>
+
+</html>

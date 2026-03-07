@@ -1,0 +1,12 @@
+{
+    "name": "openclaw-dashboard",
+    "version": "1.0.0",
+    "description": "Dashboard for OpenClaw telemetry, logs and command control.",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js"
+    },
+    "author": "OpenClaw Admin",
+    "license": "ISC"
+}
