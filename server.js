@@ -5,12 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-// 统一的配置文件路径
-const CONFIG_PATH = path.join(process.env.HOME || '/root', '.openclaw', 'openclaw.json');
+// \u7edf\u4e00\u7684\u914d\u7f6e\u6587\u4ef6\u8def\u5f84
+const HOME_DIR = process.env.HOME || '/root';
+const CONFIG_PATH = path.join(HOME_DIR, '.openclaw', 'openclaw.json');
 const DASHBOARD_DIR = __dirname;
 const PORT = 19010;
 
-// 辅助方法：读取并解析 openclaw.json
+// \u8f85\u52a9\u65b9\u6cd5\uff1a\u8bfb\u53d6\u5e76\u89e3\u6790 openclaw.json
 function getOpenClawConfig() {
     try {
         const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
@@ -65,18 +66,44 @@ const apiHandlers = {
             agent.live_model = agent.model; // fallback to config
 
             try {
-                const sessionDir = path.join(process.env.HOME || '/root', '.openclaw', 'agents', agent.id, 'sessions');
+                let agentDir = agent.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agent.id, 'agent');
+                let sessionDir = path.join(agentDir.endsWith('/agent') ? agentDir.slice(0, -6) : agentDir, 'sessions');
+                if (!fs.existsSync(sessionDir)) {
+                    // Check workspace fallback 
+                    sessionDir = path.join(HOME_DIR, '.openclaw', `workspace-${agent.id}`, 'agent', 'sessions');
+                }
+                if (!fs.existsSync(sessionDir)) {
+                    // Check inside agent folder
+                    sessionDir = path.join(agentDir, 'sessions');
+                }
                 if (!fs.existsSync(sessionDir)) return;
 
                 const allFiles = fs.readdirSync(sessionDir);
 
-                // 层级1: .lock 存活判定
+                // \u5c42\u7ea71: .lock \u5b58\u6d3b\u5224\u5b9a\u6216 2\u5206\u949f\u5185\u6709 jsonl \u6d3b\u52a8
                 const lockFiles = allFiles.filter(f => f.endsWith('.lock'));
+                let isWorking = false;
                 if (lockFiles.length > 0) {
-                    agent.status = 'working';
-                    // 取出锁对应的 session ID
+                    isWorking = true;
+                    // \u53d6\u51fa\u9501\u5bf9\u5e94\u7684 session ID
                     const lockFile = lockFiles[0];
                     agent.current_session = lockFile.replace('.jsonl.lock', '');
+                } else {
+                    const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl'));
+                    const now = Date.now();
+                    for (const f of jsonlFiles) {
+                        try {
+                            const stat = fs.statSync(path.join(sessionDir, f));
+                            if (now - stat.mtimeMs < 120000) { // 2 minutes
+                                isWorking = true;
+                                break;
+                            }
+                        } catch (e) { }
+                    }
+                }
+
+                if (isWorking) {
+                    agent.status = 'working';
                 }
 
                 // 层级2: 找出最新的 .jsonl 文件
@@ -166,24 +193,43 @@ const apiHandlers = {
         const load = os.loadavg()[0];
         const cpuPercent = Math.min(100, Math.round((load / cpus) * 100));
 
-        // 3. \u6d3e\u8dc3 Agents \u7edf\u8ba1
+        // 3. \u6d3e\u8dc3 Agents \u7edf\u8ba1\u4e0e\u4fee\u590d\u8def\u5f84\u83b7\u53d6
         let activeAgents = 0;
-        let totalAgents = 8; // \u9ed8\u8ba4 placeholder
+        let totalAgents = 8;
         try {
             const config = getOpenClawConfig();
             if (config.agents && config.agents.list) {
-                totalAgents = config.agents.list.length;
-            }
-            const agentsBase = path.join(HOME_DIR, '.openclaw', 'agents');
-            if (fs.existsSync(agentsBase)) {
-                const subdirs = fs.readdirSync(agentsBase);
-                for (const d of subdirs) {
-                    const sessionDir = path.join(agentsBase, d, 'sessions');
-                    if (fs.existsSync(sessionDir)) {
-                        const hasLock = fs.readdirSync(sessionDir).some(f => f.endsWith('.lock'));
-                        if (hasLock) activeAgents++;
+                const agentsList = config.agents.list;
+                totalAgents = agentsList.length;
+
+                agentsList.forEach(agt => {
+                    let agentDir = agt.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agt.id, 'agent');
+                    if (agentDir.endsWith('/agent')) {
+                        agentDir = agentDir.slice(0, -6);
                     }
-                }
+                    const sessionDir = path.join(agentDir, 'sessions');
+                    if (fs.existsSync(sessionDir)) {
+                        const files = fs.readdirSync(sessionDir);
+
+                        // \u5224\u65ad .lock \u5b58\u5728\u6216\u6700\u8fd1 2 \u5206\u949f\u5185\u6709\u6d3b\u8dc3 jsonl
+                        const hasLock = files.some(f => f.endsWith('.lock'));
+                        let hasRecentActivity = false;
+
+                        if (!hasLock) {
+                            const now = Date.now();
+                            files.filter(f => f.endsWith('.jsonl')).forEach(f => {
+                                try {
+                                    const stat = fs.statSync(path.join(sessionDir, f));
+                                    if (now - stat.mtimeMs < 120000) { // 2 minutes
+                                        hasRecentActivity = true;
+                                    }
+                                } catch (e) { }
+                            });
+                        }
+
+                        if (hasLock || hasRecentActivity) activeAgents++;
+                    }
+                });
             }
         } catch (e) { }
 
@@ -193,7 +239,6 @@ const apiHandlers = {
             let diskStr = "0 GB / 0 GB";
             if (!err && stdout) {
                 const parts = stdout.trim().split(/\s+/);
-                // Filesystem Size Used Avail Use% Mounted on
                 if (parts.length >= 5) {
                     const size = parts[1];
                     const used = parts[2];
@@ -202,16 +247,32 @@ const apiHandlers = {
                 }
             }
 
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                cpuPercent,
-                memPercent,
-                memStr,
-                diskPercent,
-                diskStr,
-                activeAgents,
-                totalAgents
-            }));
+            let gatewayPort = 18789;
+            try {
+                const config = getOpenClawConfig();
+                if (config.port) gatewayPort = config.port;
+            } catch (e) { }
+
+            exec('ps -eo etimes,args | grep -E "[o]penclaw.*gateway" | head -n 1', (err2, stdout2) => {
+                let uptime = 0;
+                if (!err2 && stdout2 && stdout2.trim()) {
+                    const match = parseInt(stdout2.trim().split(/\\s+/)[0]);
+                    if (!isNaN(match)) uptime = match;
+                }
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    port: gatewayPort,
+                    uptime: uptime,
+                    cpuPercent,
+                    memPercent,
+                    memStr,
+                    diskPercent,
+                    diskStr,
+                    activeAgents,
+                    totalAgents
+                }));
+            });
         });
     },
 
@@ -222,7 +283,16 @@ const apiHandlers = {
         const limit = parseInt(urlParams.searchParams.get('limit') || '10');
 
         try {
-            const sessionDir = path.join(process.env.HOME || '/root', '.openclaw', 'agents', agentId, 'sessions');
+            const config = getOpenClawConfig();
+            const configAgent = config.agents?.list?.find(a => a.id === agentId);
+            const agentDir = configAgent?.agentDir || path.join(process.env.HOME || '/root', '.openclaw', 'agents', agentId, 'agent');
+            let sessionDir = path.join(agentDir.endsWith('/agent') ? agentDir.slice(0, -6) : agentDir, 'sessions');
+            if (!fs.existsSync(sessionDir)) {
+                sessionDir = path.join(process.env.HOME || '/root', '.openclaw', `workspace-${agentId}`, 'agent', 'sessions');
+            }
+            if (!fs.existsSync(sessionDir)) {
+                sessionDir = path.join(agentDir, 'sessions');
+            }
             if (!fs.existsSync(sessionDir)) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 return res.end(JSON.stringify({ logs: [], error: 'no sessions found' }));
@@ -385,12 +455,14 @@ const apiHandlers = {
                 // Return mapped objects without saving immediately
                 const mappedModels = api_models.map(m => {
                     const id = typeof m === 'object' ? (m.id || m.name) : m;
+                    const isVision = id.toLowerCase().includes('vl') || id.toLowerCase().includes('vision');
+
                     return {
                         id: id,
                         name: id,
                         api: p.api || "openai-completions",
                         reasoning: false,
-                        input: ["text"],
+                        input: isVision ? ["text", "image"] : ["text"],
                         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
                         contextWindow: 128000,
                         maxTokens: 8192
@@ -405,6 +477,34 @@ const apiHandlers = {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, error: err.message, api_models: [], local_models: [] }));
         });
+    },
+
+    '/api/sandbox': (req, res) => {
+        if (req.method === 'GET') {
+            const config = getOpenClawConfig();
+            const level = config?.tools?.exec?.security || 'full';
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ level }));
+        } else if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => body += chunk.toString());
+            req.on('end', () => {
+                try {
+                    const data = JSON.parse(body);
+                    const newLevel = data.level;
+                    const config = getOpenClawConfig();
+                    if (!config.tools) config.tools = {};
+                    if (!config.tools.exec) config.tools.exec = {};
+                    config.tools.exec.security = newLevel;
+                    saveOpenClawConfig(config);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, level: newLevel }));
+                } catch (e) {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: "Invalid JSON" }));
+                }
+            });
+        }
     },
 
     // 接收用户前端筛选后的模型列表，覆写配置并注册到白名单
@@ -424,8 +524,20 @@ const apiHandlers = {
                     res.writeHead(404); return res.end(JSON.stringify({ error: "Provider not found" }));
                 }
 
+                // Process frontend overrides for vision
+                const processedModels = models.map(m => {
+                    let obj = typeof m === 'object' ? m : { id: m, name: m, input: ["text"] };
+                    if (obj.isVision || (obj.input && obj.input.includes("image"))) {
+                        obj.input = ["text", "image"];
+                        delete obj.isVision; // Clean up temporary frontend flag
+                    } else {
+                        obj.input = ["text"];
+                    }
+                    return obj;
+                });
+
                 // Overwrite provider's models array
-                config.models.providers[providerName].models = models;
+                config.models.providers[providerName].models = processedModels;
 
                 // Ensure agents default dictionary exists
                 if (!config.agents) config.agents = {};
@@ -449,6 +561,50 @@ const apiHandlers = {
                 res.end(JSON.stringify({ error: "Invalid JSON" }));
             }
         });
+    },
+
+    // 读写指定 agent 的 SOUL.md 配置文件供前台弹窗显示
+    '/api/agent-detail': (req, res) => {
+        const urlParams = new URL(req.url, `http://${req.headers.host}`);
+        const agentId = urlParams.searchParams.get('id');
+        if (!agentId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: "Missing agent id" }));
+        }
+
+        try {
+            const config = getOpenClawConfig();
+            const agent = config.agents?.list?.find(a => a.id === agentId);
+            let agentDir = agent?.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'agent');
+            // 1. Direct agent folder check
+            let userMdPath = path.join(agentDir, 'SOUL.md');
+
+            // 2. Check workspace sub-agent location
+            if (!fs.existsSync(userMdPath)) {
+                userMdPath = path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'SOUL.md');
+            }
+            // 3. Check within main workspace agents folder
+            if (!fs.existsSync(userMdPath)) {
+                userMdPath = path.join(HOME_DIR, '.openclaw', 'workspace', 'agents', agentId, 'SOUL.md');
+            }
+            // 4. Check main workspace root (for 'main' agent)
+            if (!fs.existsSync(userMdPath) && agentId === 'main') {
+                userMdPath = path.join(HOME_DIR, '.openclaw', 'workspace', 'SOUL.md');
+            }
+
+            let content = '';
+            if (fs.existsSync(userMdPath)) {
+                content = fs.readFileSync(userMdPath, 'utf8');
+            } else {
+                content = `该 Agent (${agentId}) 暂无详细描述信息或未创建 SOUL.md 文件。`;
+            }
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ id: agentId, description: content }));
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: e.message }));
+        }
     },
 
     // 保存大模型配置至指定 agent
@@ -568,6 +724,36 @@ const apiHandlers = {
         }
     },
 
+    '/api/cmd/upgrade': (req, res) => {
+        const { exec } = require('child_process'); // Ensure exec is available
+        exec('npm view openclaw version', (error, stdout, stderr) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (error) {
+                res.end(JSON.stringify({ success: false, error: stderr || error.message }));
+            } else {
+                const latest = stdout.trim();
+                res.end(JSON.stringify({
+                    success: true,
+                    stdout: `Scanning NPM Repository...\nLatest version on NPM is: ${latest}\nPlease run 'npm install -g openclaw@latest' manually if you wish to upgrade.`
+                }));
+            }
+        });
+    },
+
+    // 运行 openclaw doctor --fix
+    '/api/cmd/doctor-fix': (req, res) => {
+        const { exec } = require('child_process');
+        exec('openclaw doctor --fix', (err, stdout, stderr) => {
+            res.writeHead(err ? 500 : 200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: !err,
+                error: err ? err.message : null,
+                stdout: stdout,
+                stderr: stderr
+            }));
+        });
+    },
+
     // 动态获取 OpenClaw 长连接 URL 与免密 Token 防止重放拉黑
     '/api/webui-url': (req, res) => {
         try {
@@ -582,7 +768,7 @@ const apiHandlers = {
             const protocol = (tlsEnabled && !isLocal) ? 'https' : 'http';
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ url: `${protocol}://${host}:${port}/#token=${token}` }));
+            res.end(JSON.stringify({ url: `${protocol}://${host}:${port}/?token=${token}` }));
         } catch (err) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: err.message }));

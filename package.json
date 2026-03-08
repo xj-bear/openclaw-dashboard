@@ -3,6 +3,9 @@
     "version": "1.0.0",
     "description": "Dashboard for OpenClaw telemetry, logs and command control.",
     "main": "server.js",
+    "bin": {
+        "openclaw-dash": "./bin/start.js"
+    },
     "scripts": {
         "start": "node server.js",
         "dev": "node server.js"

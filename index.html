@@ -7,6 +7,17 @@
     <title>OpenClaw 控制中枢</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="./index.css">
+    <style>
+        .wechat-hover-container:hover .wechat-qr {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            scale: 1 !important;
+        }
+
+        .dashboard-footer a:hover {
+            color: var(--text-primary) !important;
+        }
+    </style>
 </head>
 
 <body>
@@ -27,8 +38,10 @@
                 <div style="text-align: right">
                     <div style="font-size: 0.8rem; color: var(--text-secondary)" data-i18n="gateway_port">Gateway Port
                     </div>
-                    <div style="color: var(--accent-green); font-weight: 600"><i class="fa-solid fa-circle-check"></i>
-                        18789 Active</div>
+                    <div id="gatewayPortDisplay" style="color: var(--accent-green); font-weight: 600"><i
+                            class="fa-solid fa-circle-check"></i>
+                        <span data-i18n="active">18789 Active</span>
+                    </div>
                 </div>
                 <div style="text-align: right">
                     <div style="font-size: 0.8rem; color: var(--text-secondary)" data-i18n="uptime">Uptime</div>
@@ -44,17 +57,30 @@
                 <div class="section-title" style="padding: 20px 20px 0;"><i class="fa-solid fa-bolt"></i> <span
                         data-i18n="quick_control">快速控制</span></div>
                 <div class="control-grid">
-                    <button class="cmd-btn"
-                        style="background: rgba(59, 130, 246, 0.4); border-color: rgba(59, 130, 246, 0.6);"
-                        onclick="openWebUI()">
-                        <i class="fa-solid fa-up-right-from-square"></i> <span>进入 OpenClaw WebUI</span>
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="cmd-btn"
+                            style="flex: 1; background: rgba(59, 130, 246, 0.4); border-color: rgba(59, 130, 246, 0.6);"
+                            onclick="openWebUI()">
+                            <i class="fa-solid fa-up-right-from-square"></i> <span>进入 OpenClaw WebUI</span>
+                        </button>
+                        <button class="cmd-btn" style="padding: 12px; border-color: rgba(255, 255, 255, 0.2);"
+                            onclick="document.getElementById('webui-modal').style.display='block'" title="绑定自定义域名">
+                            <i class="fa-solid fa-gear"></i>
+                        </button>
+                    </div>
                     <button class="cmd-btn restart" onclick="triggerCommand('restart')"
                         title="警告：重启会重置通讯秘钥，可能导致原标签页报错认证失败！">
                         <i class="fa-solid fa-rotate"></i> <span data-i18n="restart_gateway">重启 OpenClaw</span>
                     </button>
                     <button class="cmd-btn upgrade" onclick="triggerCommand('upgrade')">
                         <i class="fa-solid fa-arrow-up-right-dots"></i> <span data-i18n="check_upgrade">检查版本升级</span>
+                    </button>
+                    <button class="cmd-btn fix" onclick="triggerCommand('doctor_fix')" title="启动无效或配置严重错误时可执行此修复">
+                        <i class="fa-solid fa-wrench"></i> <span data-i18n="doctor_fix">修复 (Doctor)</span>
+                    </button>
+                    <button class="cmd-btn sandbox"
+                        onclick="document.getElementById('sandbox-modal').style.display='block'" title="配置沙箱安全等级">
+                        <i class="fa-solid fa-shield-halved"></i> <span id="sandbox-status-text">沙箱模式设置</span>
                     </button>
                     <button class="cmd-btn shutdown" onclick="triggerCommand('shutdown')">
                         <i class="fa-solid fa-power-off"></i> <span data-i18n="stop_service">停止服务</span>
@@ -82,6 +108,26 @@
                 <div id="providers-accordion-container"
                     style="flex:1; display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow-y: auto; padding-right: 4px;">
                     <!-- JS renders Accordion -->
+                </div>
+
+                <!-- Custom Footer -->
+                <div class="dashboard-footer"
+                    style="text-align: center; margin-top: auto; padding-top: 16px; color: var(--text-secondary); font-size: 0.85rem; border-top: 1px solid rgba(255,255,255,0.05);">
+                    <div
+                        style="display: flex; justify-content: center; gap: 16px; align-items: center; flex-wrap: wrap;">
+                        <span><i class="fa-solid fa-code-branch"></i> v0.01</span>
+                        <a href="https://github.com/xj-bear" target="_blank"
+                            style="color: var(--text-secondary); text-decoration: none; transition: color 0.2s;"><i
+                                class="fa-brands fa-github"></i> GitHub</a>
+                        <div class="wechat-hover-container"
+                            style="position: relative; display: inline-block; cursor: pointer;">
+                            <span style="color: var(--accent-green);"><i class="fa-brands fa-weixin"></i> Wechat</span>
+                            <img class="wechat-qr"
+                                src="https://image.5678.fun/utools/2026-02/%E5%85%AC%E4%BC%97%E5%8F%B7_1770004387582.png"
+                                alt="WeChat QR"
+                                style="position: absolute; bottom: 120%; left: 50%; transform: translateX(-50%); width: 150px; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); opacity: 0; pointer-events: none; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); transform-origin: top left; scale: 0.95;">
+                        </div>
+                    </div>
                 </div>
             </div>
         </aside>
@@ -114,6 +160,10 @@
                     </div>
                 </div>
                 <div style="display:flex; justify-content:flex-end; gap: 12px;">
+                    <button class="cmd-btn" id="btn-test-conn" onclick="testProviderConn()"
+                        style="border-color: var(--accent-blue); color: var(--accent-blue)">
+                        <i class="fa-solid fa-wifi"></i> 连通性测试
+                    </button>
                     <button class="cmd-btn" onclick="document.getElementById('add-provider-modal').style.display='none'"
                         data-i18n="cancel">取消</button>
                     <button class="save-btn" onclick="confirmAddProvider()" data-i18n="confirm">确定</button>
@@ -143,7 +193,7 @@
                                 onclick="transferInvert('left')">反选</button>
                         </div>
                         <div id="left-list" class="checkbox-list"
-                            style="flex: 1; overflow-y: auto; overflow-x: hidden;">
+                            style="flex: 1; overflow-y: auto; overflow-x: hidden; font-size: 0.85rem;">
                             <!-- JS Inject -->
                         </div>
                     </div>
@@ -164,8 +214,13 @@
                         style="flex: 1; display: flex; flex-direction: column; background: var(--bg-accent); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
                         <h4 style="margin-bottom: 8px; color: var(--accent-blue);"><i
                                 class="fa-solid fa-satellite-dish"></i> 探测到的新模型 (待添加)</h4>
-                        <input type="text" class="config-input" id="right-search" placeholder="搜索新模型..."
-                            onkeyup="renderTransfer()" style="margin-bottom: 8px; padding: 6px;">
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <input type="text" class="config-input" id="right-search" placeholder="搜索新模型..."
+                                onkeyup="renderTransfer()" style="flex:1; padding: 6px;">
+                            <button class="discovery-btn" onclick="probeRemoteModels()" id="btn-probe-models"
+                                style="padding: 6px 12px; font-size: 0.85rem; white-space: nowrap;"><i
+                                    class="fa-solid fa-radar"></i> 探测</button>
+                        </div>
                         <div style="display: flex; gap: 6px; margin-bottom: 8px;">
                             <button class="cmd-btn" style="flex:1; padding: 4px; font-size: 0.75rem;"
                                 onclick="transferSelectAll('right')">全选</button>
@@ -173,7 +228,7 @@
                                 onclick="transferInvert('right')">反选</button>
                         </div>
                         <div id="right-list" class="checkbox-list"
-                            style="flex: 1; overflow-y: auto; overflow-x: hidden;">
+                            style="flex: 1; overflow-y: auto; overflow-x: hidden; font-size: 0.85rem;">
                             <!-- JS Inject -->
                         </div>
                     </div>
@@ -187,6 +242,77 @@
                         <button class="cmd-btn" onclick="closeModelModal()">取消</button>
                         <button class="save-btn" onclick="submitTransferModels()">确认并保存</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agent 说明 Modal -->
+        <div class="modal-overlay" id="agent-desc-modal" style="display:none;">
+            <div class="glass-panel modal-content"
+                style="max-width: 500px; width: 90%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; padding: 24px;">
+                <h3 style="margin-bottom: 16px;" id="agent-desc-title">Agent Description</h3>
+                <div id="agent-desc-content"
+                    style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6; max-height: 60vh; overflow-y: auto; white-space: pre-wrap;">
+                </div>
+                <div style="display:flex; justify-content:flex-end; margin-top: 20px;">
+                    <button class="cmd-btn"
+                        onclick="document.getElementById('agent-desc-modal').style.display='none'">关闭</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sandbox Modal -->
+        <div id="sandbox-modal" class="modal-overlay" style="display:none;">
+            <div class="glass-panel modal-content"
+                style="padding: 24px; max-width: 450px; width: 100%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000;">
+                <h3 style="margin-bottom: 16px;">配置沙箱安全等级 (Sandbox)</h3>
+                <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 20px; line-height: 1.5;">
+                    <p>OpenClaw 在执行终端命令和代码时提供三档沙箱保护：</p>
+                    <ul style="margin-top:8px; padding-left:20px; display:flex; flex-direction:column; gap:6px;">
+                        <li><b>Full (安全)</b>: 保护最高，隔离执行环境</li>
+                        <li><b>Allowlist (白名单)</b>: 仅放行预设的白名单命令</li>
+                        <li><b>Deny (关闭)</b>: 极其危险，允许执行任意底层系统命令</li>
+                    </ul>
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+                    <button class="cmd-btn" id="sb-btn-full" style="flex:1" onclick="setSandboxLevel('full')">Full
+                        (安全)</button>
+                    <button class="cmd-btn" id="sb-btn-allowlist" style="flex:1"
+                        onclick="setSandboxLevel('allowlist')">白名单</button>
+                    <button class="cmd-btn shutdown" id="sb-btn-deny" style="flex:1"
+                        onclick="setSandboxLevel('deny')">关闭 (危险)</button>
+                </div>
+
+                <div id="sb-restart-prompt"
+                    style="display:none; margin-bottom: 16px; font-size: 0.8rem; color: var(--accent-orange); background: rgba(245, 158, 11, 0.1); padding: 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.2);">
+                    <i class="fa-solid fa-triangle-exclamation"></i> 沙箱模式已修改。为了使底层执行环境生效，您必须<b>重启 OpenClaw 核心程序</b>！
+                </div>
+
+                <div style="display:flex; justify-content:flex-end; gap: 12px; margin-top: 12px;">
+                    <button class="cmd-btn"
+                        onclick="document.getElementById('sandbox-modal').style.display='none'">关闭窗口</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- WebUI Domain Modal -->
+        <div id="webui-modal" class="modal-overlay" style="display:none;">
+            <div class="glass-panel modal-content"
+                style="padding: 24px; max-width: 400px; width: 100%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000;">
+                <h3 style="margin-bottom: 16px;">配置 WebUI 自定义域名</h3>
+                <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
+                    <div>
+                        <label
+                            style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block">自定义域名
+                            (如 https://chat.example.com)</label>
+                        <input type="text" class="config-input" id="custom-domain-input" placeholder="留空则使用默认网关地址">
+                    </div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap: 12px;">
+                    <button class="cmd-btn"
+                        onclick="document.getElementById('webui-modal').style.display='none'">取消</button>
+                    <button class="save-btn" onclick="saveCustomDomain()">保存</button>
                 </div>
             </div>
         </div>
@@ -275,10 +401,11 @@
                         <span>Connecting to local socket for state sync...</span>
                     </div>
                 </div>
-            </div>
         </main>
     </div>
 
+    <!-- Load Showdown for Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/showdown@2.1.0/dist/showdown.min.js"></script>
     <script src="./app.js"></script>
 </body>
 

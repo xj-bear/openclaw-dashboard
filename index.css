@@ -16,6 +16,12 @@
   --accent-red: #ef4444;
   --accent-purple: #8b5cf6;
   --accent-orange: #f59e0b;
+
+  --btn-bg: rgba(255, 255, 255, 0.05);
+  --btn-border: rgba(255, 255, 255, 0.1);
+  --btn-hover: rgba(255, 255, 255, 0.1);
+  --input-bg: rgba(0, 0, 0, 0.2);
+  --input-border: rgba(255, 255, 255, 0.1);
 }
 
 body.light-mode {
@@ -27,6 +33,12 @@ body.light-mode {
   --glass-bg: rgba(255, 255, 255, 0.75);
   --glass-border: rgba(0, 0, 0, 0.1);
   --glass-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+
+  --btn-bg: rgba(0, 0, 0, 0.05);
+  --btn-border: rgba(0, 0, 0, 0.15);
+  --btn-hover: rgba(0, 0, 0, 0.08);
+  --input-bg: rgba(255, 255, 255, 0.6);
+  --input-border: rgba(0, 0, 0, 0.15);
 }
 
 * {
@@ -185,8 +197,8 @@ body {
 }
 
 .cmd-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
   color: var(--text-primary);
   padding: 12px 16px;
   border-radius: 12px;
@@ -202,7 +214,7 @@ body {
 }
 
 .cmd-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--btn-hover);
   transform: translateY(-2px);
 }
 
@@ -355,8 +367,8 @@ body {
 
 .model-selector {
   width: 100%;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
   color: var(--text-secondary);
   padding: 8px 12px;
   border-radius: 8px;
@@ -414,7 +426,7 @@ body {
 
 .terminal-output {
   flex: 1;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--input-bg);
   border-radius: 12px;
   padding: 16px;
   font-family: 'JetBrains Mono', monospace;
@@ -427,7 +439,7 @@ body {
   scroll-behavior: smooth;
 }
 
-.log-line {
+.terminal-output .log-line {
   margin-bottom: 4px;
   display: flex;
   gap: 10px;
@@ -457,6 +469,35 @@ body {
   color: #c678dd;
 }
 
+/* Light Mode Overrides for Logs */
+body.light-mode .log-time {
+  color: #64748b;
+}
+
+body.light-mode .log-info {
+  color: #2563eb;
+}
+
+body.light-mode .log-warn {
+  color: #d97706;
+}
+
+body.light-mode .log-error {
+  color: #dc2626;
+}
+
+body.light-mode .log-success {
+  color: #16a34a;
+}
+
+body.light-mode .log-agent {
+  color: #9333ea;
+}
+
+body.light-mode .terminal-output {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 /* LLM Config Area */
 .llm-config {
   padding: 24px;
@@ -471,8 +512,8 @@ body {
 }
 
 .config-input {
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
   color: var(--text-primary);
   padding: 10px 14px;
   border-radius: 8px;
