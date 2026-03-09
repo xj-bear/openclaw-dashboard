@@ -4,9 +4,10 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
+const os = require('os');
 
 // \u7edf\u4e00\u7684\u914d\u7f6e\u6587\u4ef6\u8def\u5f84
-const HOME_DIR = process.env.HOME || '/root';
+const HOME_DIR = os.homedir() || process.env.HOME || process.env.USERPROFILE || '/root';
 const CONFIG_PATH = path.join(HOME_DIR, '.openclaw', 'openclaw.json');
 const DASHBOARD_DIR = __dirname;
 const PORT = 19010;
@@ -285,10 +286,10 @@ const apiHandlers = {
         try {
             const config = getOpenClawConfig();
             const configAgent = config.agents?.list?.find(a => a.id === agentId);
-            const agentDir = configAgent?.agentDir || path.join(process.env.HOME || '/root', '.openclaw', 'agents', agentId, 'agent');
+            const agentDir = configAgent?.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'agent');
             let sessionDir = path.join(agentDir.endsWith('/agent') ? agentDir.slice(0, -6) : agentDir, 'sessions');
             if (!fs.existsSync(sessionDir)) {
-                sessionDir = path.join(process.env.HOME || '/root', '.openclaw', `workspace-${agentId}`, 'agent', 'sessions');
+                sessionDir = path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'agent', 'sessions');
             }
             if (!fs.existsSync(sessionDir)) {
                 sessionDir = path.join(agentDir, 'sessions');

@@ -565,7 +565,12 @@ async function fetchSystemMetrics() {
 async function fetchAgentsData() {
     try {
         const res = await fetch('/api/agents');
-        agentsData = await res.json();
+        const data = await res.json();
+        if (!res.ok) {
+            console.error("Failed to load agents from API:", data.error);
+            return;
+        }
+        agentsData = data;
         renderAgentGrid();
     } catch (e) {
         console.error("Failed to load agents from API", e);
