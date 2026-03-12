@@ -258,131 +258,95 @@ const apiHandlers = {
                 candidates.push(path.join(base, 'sessions'));
                 candidates.push(path.join(agentCfg.agentDir, 'sessions'));
             }
-            candidates.push(path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'sessions'));
             candidates.push(path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'agent', 'sessions'));
             candidates.push(path.join(HOME_DIR, '.openclaw', 'workspace', 'sessions'));
-
-            for (const c of candidates) {
-                if (fs.existsSync(c)) { sessionDir = c; break; }
+            
+            for (const dir of candidates) {
+                if (fs.existsSync(dir)) {
+                    sessionDir = dir;
+                    break;
+                }
             }
 
             if (!sessionDir) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ logs: [], alerts: [], info: 'No session directory found.' }));
+                return res.end(JSON.stringify({ logs: [], alerts: [] }));
             }
 
-            // 确定要读取的 .jsonl 文件
-            // 策略1: 直接扫描目录中的 .jsonl 文件（Mac/Linux 常见格式）
-            // 策略2: 从 sessions.json 索引中取 sessionId，找对应 {sessionId}.jsonl（Windows 常见格式）
-            let latestPath = null;
             const allFiles = fs.readdirSync(sessionDir);
-            const directJsonlFiles = allFiles
-                .filter(f => f.endsWith('.jsonl') && !f.includes('.lock') && f !== 'sessions.jsonl')
-                .sort((a, b) =>
-                    fs.statSync(path.join(sessionDir, b)).mtimeMs -
-                    fs.statSync(path.join(sessionDir, a)).mtimeMs
-                );
-
-            if (directJsonlFiles.length > 0) {
-                // 策略1：直接找到 .jsonl 文件
-                latestPath = path.join(sessionDir, directJsonlFiles[0]);
-            } else {
-                // 策略2：通过 sessions.json 索引定位
-                const sessionsIndexPath = path.join(sessionDir, 'sessions.json');
-                if (fs.existsSync(sessionsIndexPath)) {
-                    try {
-                        const indexRaw = fs.readFileSync(sessionsIndexPath, 'utf-8');
-                        const indexData = JSON.parse(indexRaw);
-                        // sessions.json 的 key 格式可能是 "agent:{agentId}:main" 或其他
-                        let latestSessionId = null;
-                        let latestUpdatedAt = 0;
-
-                        for (const key of Object.keys(indexData)) {
-                            const entry = indexData[key];
-                            const sid = entry.sessionId;
-                            const updatedAt = entry.updatedAt || 0;
-                            if (sid && updatedAt >= latestUpdatedAt) {
-                                latestUpdatedAt = updatedAt;
-                                latestSessionId = sid;
-                            }
-                        }
-
-                        if (latestSessionId) {
-                            const candidate = path.join(sessionDir, `${latestSessionId}.jsonl`);
-                            if (fs.existsSync(candidate)) {
-                                latestPath = candidate;
-                            }
-                        }
-                    } catch (e) { /* index parse failed, fall through */ }
-                }
-            }
-
-            if (!latestPath) {
+            const jsonlFiles = allFiles.filter(f => f.endsWith('.jsonl') && !f.endsWith('.lock'));
+            if (jsonlFiles.length === 0) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ logs: [], alerts: [], info: 'No session log file found.' }));
+                return res.end(JSON.stringify({ logs: [], alerts: [] }));
             }
 
-            const raw = fs.readFileSync(latestPath, 'utf-8');
-            const lines = raw.trim().split('\n').filter(l => l.trim());
+            const sorted = jsonlFiles.sort((a, b) => {
+                return fs.statSync(path.join(sessionDir, b)).mtimeMs - fs.statSync(path.join(sessionDir, a)).mtimeMs;
+            });
+
+            const latestPath = path.join(sessionDir, sorted[0]);
+            const content = fs.readFileSync(latestPath, 'utf-8');
+            const lines = content.trim().split('\n').filter(l => l.trim()).slice(-limit);
 
             const logs = [];
-            const alertSet = new Set();
+            const alerts = [];
 
-            for (const line of lines) {
-                try {
-                    const entry = JSON.parse(line);
-                    const ts = entry.timestamp
-                        ? new Date(entry.timestamp).toLocaleTimeString()
-                        : new Date().toLocaleTimeString();
-
-                    // 告警检测
-                    if (entry.type === 'error') {
-                        const msg = (entry.message || '').toLowerCase();
-                        if (msg.includes('429') || msg.includes('rate limit')) alertSet.add('rate_limit');
-                        if (msg.includes('401') || msg.includes('unauthorized')) alertSet.add('auth_fail');
-                        if (msg.includes('timeout')) alertSet.add('timeout');
-                    }
-
-                    // 解析消息（兼容 type=message 和直接含 role 的格式）
-                    const msgObj = entry.message || (entry.role ? entry : null);
-                    if (msgObj) {
-                        const role = msgObj.role || 'assistant';
-                        let text = '';
-                        if (typeof msgObj.content === 'string') {
-                            text = msgObj.content;
-                        } else if (Array.isArray(msgObj.content)) {
-                            msgObj.content.forEach(c => {
-                                if (c.type === 'text' && c.text) text += c.text + ' ';
-                                else if (c.type === 'toolCall') text += `[工具调用: ${c.name}] `;
-                                else if (c.type === 'toolResult') text += `[工具结果: ${c.toolName || ''}] `;
-                            });
-                        }
-                        if (text.trim()) {
-                            logs.push({ time: ts, level: role, text: text.trim().slice(0, 500) });
-                        }
-                    }
-
-                    // tool 结果
-                    if (entry.type === 'toolResult') {
-                        const text = entry.output ? String(entry.output).slice(0, 300) : '[工具执行]';
-                        logs.push({ time: ts, level: 'tool', text: `[${entry.toolName || 'tool'}] ${text}` });
-                    }
-
-                    // 模型切换事件
-                    if (entry.type === 'model_change') {
-                        logs.push({ time: ts, level: 'tool', text: `模型切换: ${entry.provider}/${entry.modelId}` });
-                    }
-                } catch (e) { /* skip malformed lines */ }
+            // 检查是否有活跃的 .lock 文件表示正在工作
+            if (fs.existsSync(latestPath + '.lock')) {
+                // optional: add a virtual working log
             }
 
+            lines.forEach(line => {
+                try {
+                    const entry = JSON.parse(line);
+                    if (entry.type === 'message') {
+                        const msgObj = entry.message || (entry.role ? entry : null);
+                        if (msgObj) {
+                            let text = '';
+                            if (typeof msgObj.content === 'string') {
+                                text = msgObj.content;
+                            } else if (Array.isArray(msgObj.content)) {
+                                msgObj.content.forEach(c => {
+                                    if (c.type === 'text' && c.text) text += c.text;
+                                    else if (c.type === 'toolCall') text += `[工具呼叫: ${c.name}] `;
+                                });
+                            }
+                            if (text.trim()) {
+                                logs.push({ level: msgObj.role === 'user' ? 'user' : 'assistant', text: text.trim(), time: new Date(entry.timestamp || Date.now()).toLocaleTimeString() });
+                            }
+                        }
+                    } else if (entry.type === 'toolResult') {
+                        logs.push({ level: 'tool', text: `[工具返回: ${entry.toolName}] ${typeof entry.result === 'string' ? entry.result.substring(0, 100) : 'Done'}`, time: new Date(entry.timestamp || Date.now()).toLocaleTimeString() });
+                    }
+                } catch (e) { }
+            });
+
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ logs: logs.slice(-limit), alerts: [...alertSet] }));
+            res.end(JSON.stringify({ logs, alerts }));
         } catch (e) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: e.message, logs: [], alerts: [] }));
+            console.error("Failed to read agent logs:", e);
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
         }
     },
 
+    // 获取全局系统日志 (app.log)
+    '/api/sys-logs': (req, res) => {
+        const logPath = path.join(HOME_DIR, '.openclaw', 'app.log');
+        try {
+            if (!fs.existsSync(logPath)) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify([]));
+            }
+            const content = fs.readFileSync(logPath, 'utf-8');
+            const lines = content.trim().split('\n').slice(-100);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(lines));
+        } catch (e) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+        }
+    },
 
     '/api/sys-health': (req, res) => {
         const totalMem = os.totalmem();
@@ -1129,6 +1093,24 @@ const apiHandlers = {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, message: 'Shutdown triggered' }));
             });
+        }
+    },
+
+    // 获取全局系统日志 (app.log)
+    '/api/sys-logs': (req, res) => {
+        const logPath = path.join(HOME_DIR, '.openclaw', 'app.log');
+        try {
+            if (!fs.existsSync(logPath)) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify([]));
+            }
+            const content = fs.readFileSync(logPath, 'utf-8');
+            const lines = content.trim().split('\n').slice(-100);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(lines));
+        } catch (e) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
         }
     }
 };

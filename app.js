@@ -712,8 +712,7 @@ function renderAgentGrid() {
             if (agentId !== 'system') {
                 viewAgentLogs(agentId);
             } else {
-                currentLogAgentId = null;
-                document.getElementById('terminal-output').innerHTML = `<div class="log-line"><span class="log-info">[SYSTEM]</span><span>正在开发系统全局日志查看功能...</span></div>`;
+                viewSystemLogs();
             }
         };
     }
@@ -1059,10 +1058,63 @@ async function viewAgentLogs(agentId, isInterval = false) {
 
     } catch (e) {
         if (!isInterval) {
-            terminal.innerHTML += `<div class="log-line"><span class="log-error">[ERROR]\u65e5\u5fd7\u52a0\u8f7d\u5931\u8d25: ${e.message}</span></div>`;
+            terminal.innerHTML += `<div class="log-line"><span class="log-error">[ERROR] 日志加载失败: ${e.message}</span></div>`;
         }
     }
 }
+
+async function viewSystemLogs(isInterval = false) {
+    currentLogAgentId = null;
+    const terminal = document.getElementById('terminal-output');
+
+    if (!isInterval) {
+        terminal.innerHTML = `<div class="log-line"><span class="log-time">[${new Date().toLocaleTimeString()}]</span><span class="log-info">[SYSTEM]</span><span>正在加载系统全局日志 (app.log)...</span></div>`;
+        seenLogsSet = new Set();
+        autoScrollEnabled = true;
+        updateScrollLockIcon();
+    }
+
+    try {
+        const res = await fetch('/api/sys-logs');
+        if (!res.ok) return;
+        const lines = await res.json();
+
+        let newHtml = '';
+        let hasNewLogs = false;
+
+        lines.forEach(line => {
+            if (!line.trim()) return;
+            const logKey = `sys-${line}`;
+            if (!seenLogsSet.has(logKey)) {
+                seenLogsSet.add(logKey);
+                
+                let cls = 'log-info';
+                if (line.includes('ERROR')) cls = 'log-error';
+                else if (line.includes('WARN')) cls = 'log-warn';
+                else if (line.includes('SUCCESS')) cls = 'log-success';
+
+                newHtml += `<div class="log-line" style="white-space: pre-wrap; word-break: break-all;">
+                    <span class="${cls}">${line}</span>
+                </div>`;
+                hasNewLogs = true;
+            }
+        });
+
+        if (hasNewLogs) {
+            const isAtBottom = (terminal.scrollHeight - terminal.scrollTop) <= (terminal.clientHeight + 20);
+            terminal.innerHTML += newHtml;
+            while (terminal.children.length > 300) {
+                terminal.removeChild(terminal.firstElementChild);
+            }
+            if (autoScrollEnabled && isAtBottom) {
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+        }
+    } catch (e) {
+        console.error("Failed to fetch system logs", e);
+    }
+}
+
 
 function updateScrollLockIcon() {
     const icon = document.getElementById('scroll-lock');
@@ -1367,8 +1419,14 @@ function simulateLogs() {
         if (currentLogAgentId) {
             await viewAgentLogs(currentLogAgentId, true);
         } else {
-            const workingAgent = agentsData.find(a => a.status === 'working') || agentsData[0];
-            if (workingAgent) await viewAgentLogs(workingAgent.id, true);
+            // 如果是在 system 标签页，则刷新系统日志
+            const selectEl = document.getElementById('agent-log-select');
+            if (selectEl && selectEl.value === 'system') {
+                await viewSystemLogs(true);
+            } else {
+                const workingAgent = agentsData.find(a => a.status === 'working') || agentsData[0];
+                if (workingAgent) await viewAgentLogs(workingAgent.id, true);
+            }
         }
     }, 15000);
 }
