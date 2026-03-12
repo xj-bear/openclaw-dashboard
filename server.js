@@ -17,9 +17,20 @@ const PORT = 19010;
 // 辅助方法：读取并解析 providers.json
 function getProvidersConfig() {
     try {
-        if (!fs.existsSync(PROVIDERS_PATH)) return {};
-        const raw = fs.readFileSync(PROVIDERS_PATH, 'utf-8');
-        return JSON.parse(raw);
+        if (fs.existsSync(PROVIDERS_PATH)) {
+            const raw = fs.readFileSync(PROVIDERS_PATH, 'utf-8');
+            const parsed = JSON.parse(raw);
+            if (Object.keys(parsed).length > 0) return parsed;
+        }
+        
+        // 回退逻辑：从 openclaw.json 中读取
+        const openclawConfig = getOpenClawConfig();
+        if (openclawConfig && openclawConfig.models && openclawConfig.models.providers) {
+            console.log("Fallback: Loading providers from openclaw.json");
+            return openclawConfig.models.providers;
+        }
+        
+        return {};
     } catch (e) {
         console.error("Failed to read providers:", e);
         return {};
@@ -415,15 +426,29 @@ const apiHandlers = {
         } catch (e) { }
         
         // 辅助检测端口连接性
-        const checkPort = (port) => {
-            return new Promise((resolve) => {
-                const socket = new net.Socket();
-                socket.setTimeout(500);
-                socket.once('connect', () => { socket.destroy(); resolve(true); });
-                socket.once('timeout', () => { socket.destroy(); resolve(false); });
-                socket.once('error', () => { socket.destroy(); resolve(false); });
-                socket.connect(port, '127.0.0.1');
-            });
+        const checkPort = async (port) => {
+            const hosts = ['127.0.0.1', '::1', 'localhost'];
+            for (const host of hosts) {
+                try {
+                    const isConnected = await new Promise((resolve) => {
+                        const socket = new net.Socket();
+                        socket.setTimeout(500);
+                        socket.once('connect', () => { socket.destroy(); resolve(true); });
+                        socket.once('timeout', () => { socket.destroy(); resolve(false); });
+                        socket.once('error', () => { socket.destroy(); resolve(false); });
+                        // 捕获可能由于没有 IPv6 堆栈而同步抛出的错
+                        try {
+                            socket.connect(port, host);
+                        } catch (e) {
+                            resolve(false);
+                        }
+                    });
+                    if (isConnected) return true;
+                } catch (e) {
+                    continue;
+                }
+            }
+            return false;
         };
 
         const finishResponse = (diskPercent, diskStr, finalCpuPercent, uptime) => {

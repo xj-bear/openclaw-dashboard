@@ -242,6 +242,7 @@ body {
   flex-direction: column;
   gap: 24px;
   overflow: visible;
+  min-width: 0;
 }
 
 /* Agent Matrix */
@@ -396,6 +397,7 @@ body {
   padding: 20px;
   min-height: 300px;
   overflow: visible;
+  min-width: 0;
 }
 
 .terminal-header {
@@ -405,11 +407,19 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
   color: var(--text-secondary);
+  min-width: 0;
 }
 
 .terminal-tabs {
   display: flex;
   gap: 16px;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+
+.terminal-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .terminal-tab {
@@ -417,6 +427,8 @@ body {
   padding-bottom: 4px;
   border-bottom: 2px solid transparent;
   transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .terminal-tab.active {

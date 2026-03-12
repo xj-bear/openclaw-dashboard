@@ -258,8 +258,18 @@ function addProviderPrompt() {
 async function confirmAddProvider() {
     const pName = document.getElementById('new-provider-name').value.trim();
     const pUrl = document.getElementById('new-provider-url').value.trim() || 'https://api.openai.com/v1';
-    const pKey = document.getElementById('new-provider-key').value.trim() || 'sk-xxxxxxxx';
-    if (!pName) return;
+    const pKey = document.getElementById('new-provider-key').value.trim();
+    
+    // 增加数据校验
+    if (!pName) {
+        alert("请输入供应商名称 (Provider Name)！");
+        return;
+    }
+    if (!pKey) {
+        alert("请输入有效的 API Key！");
+        return;
+    }
+
     try {
         const resp = await fetch('/api/add-provider', {
             method: 'POST',
@@ -272,7 +282,8 @@ async function confirmAddProvider() {
             })
         });
         if (!resp.ok) {
-            console.error('Add provider failed with status:', resp.status);
+            const errText = await resp.text();
+            alert(`创建失败: ${errText || resp.status}`);
             return;
         }
         document.getElementById('add-provider-modal').style.display = 'none';
@@ -282,6 +293,7 @@ async function confirmAddProvider() {
         if (newBox) newBox.classList.add('active');
     } catch (e) {
         console.error("Add provider failed", e);
+        alert("请求失败，请检查网络连接或服务器状态。");
     }
 }
 
@@ -679,38 +691,31 @@ function renderAgentGrid() {
     const grid = document.getElementById('agent-grid');
     if (!grid) return;
 
-    // --- 动态渲染终端标签页 ---
+    // --- 动态渲染终端标签页为下拉菜单 ---
     const tabContainer = document.querySelector('.terminal-tabs');
     if (tabContainer) {
-        // 先保留 System Logs 标签（第一个）
-        const sysTab = tabContainer.firstElementChild;
-        tabContainer.innerHTML = '';
-        if (sysTab) tabContainer.appendChild(sysTab);
-
+        // 构建下拉菜单
+        let selectHtml = `<select id="agent-log-select" class="model-selector" style="max-width: 250px;">`;
+        selectHtml += `<option value="system" ${currentLogAgentId === null ? 'selected' : ''}>System Logs (app.log)</option>`;
+        
         agentsData.forEach(agent => {
-            const tab = document.createElement('div');
-            tab.className = 'terminal-tab' + (currentLogAgentId === agent.id ? ' active' : '');
-            tab.innerText = `Agent: ${agent.name || agent.id}`;
-            tab.setAttribute('data-agent-id', agent.id);
-            tabContainer.appendChild(tab);
+             selectHtml += `<option value="${agent.id}" ${currentLogAgentId === agent.id ? 'selected' : ''}>Agent: ${agent.name || agent.id}</option>`;
         });
-
-        // 重新绑定点击事件（因为 innerHTML 变了或者加了新元素）
-        const allTabs = tabContainer.querySelectorAll('.terminal-tab');
-        allTabs.forEach(tab => {
-            tab.onclick = () => {
-                allTabs.forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                const agentId = tab.getAttribute('data-agent-id');
-                if (agentId) {
-                    viewAgentLogs(agentId);
-                } else {
-                    // System Logs fallback
-                    currentLogAgentId = null;
-                    document.getElementById('terminal-output').innerHTML = `<div class="log-line"><span class="log-info">[SYSTEM]</span><span>正在开发系统全局日志查看功能...</span></div>`;
-                }
-            };
-        });
+        selectHtml += `</select>`;
+        
+        tabContainer.innerHTML = selectHtml;
+        
+        // 绑定切换事件
+        const selectEl = document.getElementById('agent-log-select');
+        selectEl.onchange = (e) => {
+            const agentId = e.target.value;
+            if (agentId !== 'system') {
+                viewAgentLogs(agentId);
+            } else {
+                currentLogAgentId = null;
+                document.getElementById('terminal-output').innerHTML = `<div class="log-line"><span class="log-info">[SYSTEM]</span><span>正在开发系统全局日志查看功能...</span></div>`;
+            }
+        };
     }
 
     let optionList = localModelsData.length > 0 ? localModelsData : (agentsData.map(a => a.model).filter(Boolean));
