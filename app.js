@@ -673,6 +673,40 @@ function renderAgentGrid() {
     const grid = document.getElementById('agent-grid');
     if (!grid) return;
 
+    // --- 动态渲染终端标签页 ---
+    const tabContainer = document.querySelector('.terminal-tabs');
+    if (tabContainer) {
+        // 先保留 System Logs 标签（第一个）
+        const sysTab = tabContainer.firstElementChild;
+        tabContainer.innerHTML = '';
+        if (sysTab) tabContainer.appendChild(sysTab);
+
+        agentsData.forEach(agent => {
+            const tab = document.createElement('div');
+            tab.className = 'terminal-tab' + (currentLogAgentId === agent.id ? ' active' : '');
+            tab.innerText = `Agent: ${agent.name || agent.id}`;
+            tab.setAttribute('data-agent-id', agent.id);
+            tabContainer.appendChild(tab);
+        });
+
+        // 重新绑定点击事件（因为 innerHTML 变了或者加了新元素）
+        const allTabs = tabContainer.querySelectorAll('.terminal-tab');
+        allTabs.forEach(tab => {
+            tab.onclick = () => {
+                allTabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                const agentId = tab.getAttribute('data-agent-id');
+                if (agentId) {
+                    viewAgentLogs(agentId);
+                } else {
+                    // System Logs fallback
+                    currentLogAgentId = null;
+                    document.getElementById('terminal-output').innerHTML = `<div class="log-line"><span class="log-info">[SYSTEM]</span><span>正在开发系统全局日志查看功能...</span></div>`;
+                }
+            };
+        });
+    }
+
     let optionList = localModelsData.length > 0 ? localModelsData : (agentsData.map(a => a.model).filter(Boolean));
     const uniqueOptions = [...new Set(optionList)];
 
@@ -851,6 +885,82 @@ let currentLogAgentId = null;
 let autoScrollEnabled = true;
 let seenLogsSet = new Set();
 
+// 格式归一化：兼容 server.js 自定义格式 和 openclaw gateway 原生格式
+function normalizeLogData(rawData, agentId) {
+    // 格式1: { logs: [...], alerts: [...] } (server.js 自定义路由)
+    if (rawData && !Array.isArray(rawData) && Array.isArray(rawData.logs)) {
+        return rawData;
+    }
+
+    // 格式2: [ {type:"message", message:{role, content:[...]}, timestamp}, ... ]
+    // (openclaw gateway 原生返回的 JSONL 行数组)
+    const normalized = { logs: [], alerts: [] };
+    if (!Array.isArray(rawData)) return normalized;
+
+    rawData.forEach(item => {
+        const ts = item.timestamp
+            ? new Date(item.timestamp).toLocaleTimeString()
+            : new Date().toLocaleTimeString();
+
+        // 跳过 session 元数据行
+        if (item.type === 'session') return;
+
+        // 告警检测
+        if (item.type === 'error') {
+            const errMsg = (typeof item.message === 'string' ? item.message : '').toLowerCase();
+            if (errMsg.includes('429') || errMsg.includes('rate')) normalized.alerts.push('rate_limit');
+            if (errMsg.includes('401') || errMsg.includes('unauthorized')) normalized.alerts.push('auth_fail');
+            if (errMsg.includes('timeout')) normalized.alerts.push('timeout');
+        }
+
+        // 解析消息：type=message, message={role, content}
+        if (item.type === 'message' && item.message) {
+            const msg = item.message;
+            const role = msg.role || 'assistant';
+            let text = '';
+
+            if (typeof msg.content === 'string') {
+                text = msg.content;
+            } else if (Array.isArray(msg.content)) {
+                msg.content.forEach(c => {
+                    if (c.type === 'text' && c.text) text += c.text + ' ';
+                    else if (c.type === 'toolCall') text += `[工具调用: ${c.name || ''}] `;
+                    else if (c.type === 'toolResult') text += `[工具结果: ${c.toolName || ''}] `;
+                });
+            }
+
+            if (text.trim()) {
+                normalized.logs.push({
+                    time: ts,
+                    level: role,  // user, assistant, tool
+                    text: text.trim().slice(0, 500)
+                });
+            }
+        }
+
+        // 工具结果
+        if (item.type === 'toolResult') {
+            const output = item.output ? String(item.output).slice(0, 300) : '[工具执行]';
+            normalized.logs.push({
+                time: ts,
+                level: 'tool',
+                text: `[${item.toolName || 'tool'}] ${output}`
+            });
+        }
+
+        // 模型切换
+        if (item.type === 'model_change') {
+            normalized.logs.push({
+                time: ts,
+                level: 'tool',
+                text: `模型切换: ${item.provider}/${item.modelId}`
+            });
+        }
+    });
+
+    return normalized;
+}
+
 async function viewAgentLogs(agentId, isInterval = false) {
     currentLogAgentId = agentId;
     const terminal = document.getElementById('terminal-output');
@@ -859,6 +969,8 @@ async function viewAgentLogs(agentId, isInterval = false) {
         window.pauseTerminalUpdate = 0; // manually clicking "view logs" resumes polling immediately
         autoScrollEnabled = true;
         updateScrollLockIcon();
+        // 主动切换 agent 时重置已读集合，确保日志能重新渲染
+        seenLogsSet = new Set();
     }
 
     let baseHtml = `<div class="log-line">
@@ -873,18 +985,23 @@ async function viewAgentLogs(agentId, isInterval = false) {
 
     try {
         const res = await fetch(`/api/agent-logs?id=${agentId}&limit=12`);
-        const data = await res.json();
+        const rawData = await res.json();
+
+        // --- 格式归一化：兼容两种后端返回格式 ---
+        // 格式1: { logs: [...], alerts: [...] } (server.js 自定义路由)
+        // 格式2: [ {type, message, ...}, ... ] (openclaw gateway 原生格式)
+        const data = normalizeLogData(rawData, agentId);
 
         let newHtml = '';
         let hasNewLogs = false;
 
-        // \u5c55\u793a\u544a\u8b66 badges
+        // 展示告警 badges
         if (data.alerts && data.alerts.length > 0) {
             data.alerts.forEach(alert => {
                 const alertKey = `${agentId}-alert-${alert}`;
                 if (!seenLogsSet.has(alertKey)) {
                     seenLogsSet.add(alertKey);
-                    const alertMap = { rate_limit: ['\ud83d\udfe1 \u9650\u6d41\u544a\u8b66 429', 'log-warn'], auth_fail: ['\ud83d\udd34 \u9274\u6743\u5931\u8d25', 'log-error'], timeout: ['\ud83d\udfe0 \u8d85\u65f6', 'log-warn'] };
+                    const alertMap = { rate_limit: ['\ud83d\udfe1 限流告警 429', 'log-warn'], auth_fail: ['\ud83d\udd34 鉴权失败', 'log-error'], timeout: ['\ud83d\udfe0 超时', 'log-warn'] };
                     const [txt, cls] = alertMap[alert] || [alert, 'log-warn'];
                     newHtml += `<div class="log-line"><span class="log-time">[ALERT]</span><span class="${cls}">${txt}</span></div>`;
                     hasNewLogs = true;
@@ -895,16 +1012,18 @@ async function viewAgentLogs(agentId, isInterval = false) {
         if (data.logs && data.logs.length > 0) {
             const levelMap = { user: 'log-agent', assistant: 'log-success', tool: 'log-info', error: 'log-error' };
             data.logs.forEach(log => {
-                const logKey = `${agentId}-${log.time}-${log.text.substring(0, 20)}`;
+                const logText = log.text || '';
+                const logTime = log.time || new Date().toLocaleTimeString();
+                const logKey = `${agentId}-${logTime}-${logText.substring(0, 20)}`;
                 if (!seenLogsSet.has(logKey)) {
                     seenLogsSet.add(logKey);
                     const cls = levelMap[log.level] || 'log-info';
                     const icon = { user: '\ud83d\udc64', assistant: '\ud83e\udd16', tool: '\ud83d\udd27', error: '\u274c' }[log.level] || '\u2139\ufe0f';
                     newHtml += `
                         <div class="log-line">
-                            <span class="log-time">[${log.time}]</span>
+                            <span class="log-time">[${logTime}]</span>
                             <span class="${cls}">${icon} [${agentId}]</span>
-                            <span style="word-break:break-word">${escapeHtml(log.text)}</span>
+                            <span style="word-break:break-word">${escapeHtml(logText)}</span>
                         </div>`;
                     hasNewLogs = true;
                 }
@@ -919,6 +1038,11 @@ async function viewAgentLogs(agentId, isInterval = false) {
             }
             if (autoScrollEnabled && isAtBottom) {
                 terminal.scrollTop = terminal.scrollHeight;
+            }
+        } else if (!isInterval) {
+            // 如果是手动点击且确实没数据，提示用户
+            if (data.logs && data.logs.length === 0) {
+                terminal.innerHTML = `<div class="log-line"><span class="log-time">[${new Date().toLocaleTimeString()}]</span><span class="log-info">[SESSION]</span><span>该 Agent 暂无活跃会话记录。</span></div>`;
             }
         }
 
@@ -965,7 +1089,6 @@ function setupTerminalActions() {
             window.pauseTerminalUpdate = Date.now(); // pause briefly
         });
     }
-
     // Detect manual scrolling up to disable auto-scroll
     terminal.addEventListener('scroll', () => {
         const isAtBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40;
@@ -977,6 +1100,8 @@ function setupTerminalActions() {
             updateScrollLockIcon();
         }
     });
+
+    // --- 终端标签页由于已在 renderAgentGrid 中动态处理并绑定，此处仅保留原有逻辑 ---
 }
 
 function escapeHtml(str) {
@@ -1173,42 +1298,53 @@ function simulateLogs() {
         try {
             const defaultAgent = (agentsData.length > 0 && agentsData.find(a => a.status === 'working')) || agentsData[0];
             const agentId = defaultAgent ? defaultAgent.id : 'main';
+            currentLogAgentId = agentId;
             const res = await fetch(`/api/agent-logs?id=${agentId}&limit=8`);
-            const data = await res.json();
+            const rawData = await res.json();
+            const data = normalizeLogData(rawData, agentId);
             if (data.logs && data.logs.length > 0) {
                 terminal.innerHTML = '';
                 const levelMap = { user: 'log-agent', assistant: 'log-success', tool: 'log-info', error: 'log-error' };
                 data.logs.forEach(log => {
+                    const logText = log.text || '';
+                    const logTime = log.time || '';
+                    const logKey = `${agentId}-${logTime}-${logText.substring(0, 20)}`;
+                    seenLogsSet.add(logKey);
+
                     const cls = levelMap[log.level] || 'log-info';
                     const icon = { user: '👤', assistant: '🤖', tool: '🔧', error: '❌' }[log.level] || 'ℹ️';
                     const line = document.createElement('div');
                     line.className = 'log-line';
                     line.innerHTML = `
-                        <span class="log-time">[${log.time}]</span>
+                        <span class="log-time">[${logTime}]</span>
                         <span class="${cls}">${icon} [${agentId}]</span>
-                        <span style="word-break:break-word">${escapeHtml(log.text)}</span>
+                        <span style="word-break:break-word">${escapeHtml(logText)}</span>
                     `;
                     terminal.appendChild(line);
                 });
                 terminal.scrollTop = terminal.scrollHeight;
+            } else {
+                terminal.innerHTML = `<div class="log-line"><span class="log-info">[SYSTEM]</span> <span>暂无 ${agentId} 的活跃历史日志。</span></div>`;
             }
         } catch (e) { /* silently fail on initial load */ }
     };
 
     loadInitialLogs();
-    // 每 15 秒自动刷新最活跃的 agent 日志
+    // 每 15 秒自动刷新显示的 agent 日志
     setInterval(async () => {
         await fetchAgentsData();
         if (window.pauseTerminalUpdate && Date.now() - window.pauseTerminalUpdate < 60000) {
-            // pause auto-refresh if a command is blocking the terminal view
             return;
         }
 
-        // 只有当开启了 AutoScroll 或者是用户手动点开终端且并未拉到上方阅读时才覆写数据。
-        // 如果 autoScrollEnabled == false，说明用户正在阅读历史日志，此时直接 return 跳过刷新
         if (!autoScrollEnabled) return;
 
-        const workingAgent = agentsData.find(a => a.status === 'working') || agentsData[0];
-        if (workingAgent) await viewAgentLogs(workingAgent.id, true);
+        // 如果用户选定了某个 Agent，则只刷新该 Agent 的日志；否则刷新最活跃的。
+        if (currentLogAgentId) {
+            await viewAgentLogs(currentLogAgentId, true);
+        } else {
+            const workingAgent = agentsData.find(a => a.status === 'working') || agentsData[0];
+            if (workingAgent) await viewAgentLogs(workingAgent.id, true);
+        }
     }, 15000);
 }
