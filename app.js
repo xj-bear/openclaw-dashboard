@@ -255,7 +255,7 @@ async function confirmAddProvider() {
     const pKey = document.getElementById('new-provider-key').value.trim() || 'sk-xxxxxxxx';
     if (!pName) return;
     try {
-        await fetch('/api/add-provider', {
+        const resp = await fetch('/api/add-provider', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -265,9 +265,15 @@ async function confirmAddProvider() {
                 apiType: 'openai-completions'
             })
         });
+        if (!resp.ok) {
+            console.error('Add provider failed with status:', resp.status);
+            return;
+        }
         document.getElementById('add-provider-modal').style.display = 'none';
         await loadProviders();
-        document.getElementById(`provider-box-${pName}`).classList.add('active');
+        // DOM 在 loadProviders 渲染后才可安全访问
+        const newBox = document.getElementById(`provider-box-${pName}`);
+        if (newBox) newBox.classList.add('active');
     } catch (e) {
         console.error("Add provider failed", e);
     }
@@ -699,14 +705,35 @@ function renderAgentGrid() {
             : `<span style="font-size:0.7rem; background:rgba(100,100,100,0.15); color:var(--text-secondary); padding:2px 6px; border-radius:4px">\u25cb \u5f85\u673a</span>`;
 
         const tokenBadge = agent.token_usage > 0
-            ? `<span title="\u672c\u6b21\u4f1a\u8bdd\u7d2f\u8ba1 Token \u7528\u91cf\uff08\u4e00\u4e2a Token \u5927\u7ea6\u662f\u534a\u4e2a\u6c49\u5b57\u6216 3/4 \u4e2a\u82f1\u6587\u5355\u8bcd\uff09" style="font-size:0.7rem; color:var(--accent-blue); cursor:help">\ud83d\udcca ${agent.token_usage.toLocaleString()} Tokens</span>`
+            ? `<span title="本次会话累计 Token 用量（一个 Token 大约是半个汉字或 3/4 个英文单词）" style="font-size:0.7rem; color:var(--accent-blue); cursor:help">📊 ${agent.token_usage.toLocaleString()} Tokens</span>`
             : '';
 
         const latestTimeRaw = (() => { try { return new Date(agent.last_activity).toLocaleString(); } catch (e) { return ''; } })();
         const ActionText = agent.latest_action ? agent.latest_action.slice(0, 42) + (agent.latest_action.length > 42 ? '...' : '') : '';
 
-        // \u5982\u679c\u5361\u7247\u4e0d\u5b58\u5728\uff0c\u5219\u521b\u5efa
+        // 如果卡片不存在，则创建
         if (!card) {
+            // 新建卡片时：若 agent 没有设置模型，自动选中第一个可用模型作为默认值
+            let effectiveModel = agent.model;
+            if (!hasSelectedOption && uniqueOptions.length > 0) {
+                const firstOpt = uniqueOptions[0];
+                effectiveModel = typeof firstOpt === 'object' ? firstOpt.id : firstOpt;
+                // 将首个选项标记为 selected
+                optionsHtml = uniqueOptions.map((model, idx) => {
+                    const modelId = typeof model === 'object' ? model.id : model;
+                    const isVision = visionModels.has(modelId);
+                    const eyeIcon = isVision ? ' 👁️' : '';
+                    const isSelected = idx === 0;
+                    return `<option value="${modelId}" ${isSelected ? 'selected' : ''}>${modelId}${eyeIcon}</option>`;
+                }).join('');
+
+                // If a new model was auto-selected, update the agent's model and save it
+                if (effectiveModel !== agent.model) {
+                    updateAgentModel(agent.id, effectiveModel);
+                    agent.model = effectiveModel; // Update local agent data immediately
+                }
+            }
+
             card = document.createElement('div');
             card.className = 'agent-card';
             card.id = `agent-card-${agent.id}`;
@@ -766,11 +793,12 @@ function renderAgentGrid() {
                 latestAction.style.cursor = agent.latest_action ? 'pointer' : 'default';
             }
 
-            // \u9664\u975e select \u5f53\u524d\u6ca1\u6709\u7126\u70b9\uff0c\u5426\u5219\u4e0d\u8981\u53bb\u5237\u65b0 select \u4ee5\u514d\u6253\u65ad\u7528\u6237
+            // 除非 select 当前没有焦点，否则不要去刷新 select 以免打断用户
             const selectEl = document.getElementById(`agent-mdl-${agent.id}`);
             if (selectEl && document.activeElement !== selectEl) {
                 const currentVal = selectEl.value;
-                if (currentVal !== agent.model || selectEl.innerHTML === '') {
+                // 当前值变了、选项为空、或选项数量有变化（新增/删除了模型）时才重新渲染
+                if (currentVal !== agent.model || selectEl.innerHTML === '' || selectEl.options.length !== uniqueOptions.length) {
                     selectEl.innerHTML = optionsHtml;
                     selectEl.value = agent.model;
                 }

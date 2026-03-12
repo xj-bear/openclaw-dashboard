@@ -9,8 +9,45 @@ const os = require('os');
 // 统一的配置文件路径
 const HOME_DIR = os.homedir() || process.env.HOME || process.env.USERPROFILE || '/root';
 const CONFIG_PATH = path.join(HOME_DIR, '.openclaw', 'openclaw.json');
+const PROVIDERS_PATH = path.join(HOME_DIR, '.openclaw', 'providers.json');
 const DASHBOARD_DIR = __dirname;
 const PORT = 19010;
+
+// 辅助方法：读取并解析 providers.json
+function getProvidersConfig() {
+    try {
+        if (!fs.existsSync(PROVIDERS_PATH)) return {};
+        const raw = fs.readFileSync(PROVIDERS_PATH, 'utf-8');
+        return JSON.parse(raw);
+    } catch (e) {
+        console.error("Failed to read providers:", e);
+        return {};
+    }
+}
+
+// 辅助方法：保存 providers.json，并同步到 openclaw.json 以供网关使用
+function saveProvidersConfig(providersObj) {
+    try {
+        // 1. 保存到隔离的 providers.json (主存储，防止 doctor 删掉)
+        fs.writeFileSync(PROVIDERS_PATH, JSON.stringify(providersObj, null, 2), 'utf-8');
+
+        // 2. 同步到 openclaw.json (运行时存储，供网关识别)
+        const openclawConfig = getOpenClawConfig();
+        if (openclawConfig) {
+            // 根据用户提供的格式：应存放在根节点的 models.providers 下
+            if (!openclawConfig.models) openclawConfig.models = {};
+            openclawConfig.models.mode = "merge";
+            openclawConfig.models.providers = JSON.parse(JSON.stringify(providersObj));
+
+            // 保存回 openclaw.json
+            saveOpenClawConfig(openclawConfig);
+        }
+        return true;
+    } catch (e) {
+        console.error("Failed to save providers:", e);
+        return false;
+    }
+}
 
 // 辅助方法：读取并解析 openclaw.json
 function getOpenClawConfig() {
@@ -380,6 +417,347 @@ const apiHandlers = {
                 }, 500);
             });
         }
+    },
+
+    // 获取供应商列表
+    '/api/providers': (req, res) => {
+        const providers = getProvidersConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(providers));
+    },
+
+    // 新增或更新供应商
+    '/api/add-provider': (req, res) => {
+        if (req.method !== 'POST') {
+            res.writeHead(405);
+            return res.end(JSON.stringify({ error: 'Method not allowed' }));
+        }
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const { providerName, baseUrl, apiKey, apiType } = JSON.parse(body);
+                if (!providerName) {
+                    res.writeHead(400);
+                    return res.end(JSON.stringify({ error: 'providerName is required' }));
+                }
+                const providers = getProvidersConfig();
+                const existing = providers[providerName] || {};
+                providers[providerName] = {
+                    ...existing,
+                    baseUrl: baseUrl || existing.baseUrl || '',
+                    apiKey: apiKey || existing.apiKey || '',
+                    api: apiType || existing.api || 'openai-completions',
+                    models: existing.models || []
+                };
+                if (saveProvidersConfig(providers)) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, message: `Provider "${providerName}" saved to providers.json.` }));
+                } else {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: 'Failed to save providers' }));
+                }
+            } catch (e) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Invalid JSON: ' + e.message }));
+            }
+        });
+    },
+
+    // 删除供应商
+    '/api/delete-provider': (req, res) => {
+        if (req.method !== 'DELETE') {
+            res.writeHead(405);
+            return res.end(JSON.stringify({ error: 'Method not allowed' }));
+        }
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const name = url.searchParams.get('name');
+        if (!name) {
+            res.writeHead(400);
+            return res.end(JSON.stringify({ error: 'name is required' }));
+        }
+        const providers = getProvidersConfig();
+        if (providers[name]) {
+            delete providers[name];
+            if (saveProvidersConfig(providers)) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, message: `Provider "${name}" deleted from providers.json.` }));
+            } else {
+                res.writeHead(500);
+                res.end(JSON.stringify({ error: 'Failed to save providers' }));
+            }
+        } else {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: `Provider "${name}" not found` }));
+        }
+    },
+
+    // 探测供应商可用模型
+    '/api/discover-models': (req, res) => {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const providerName = url.searchParams.get('provider');
+        if (!providerName) {
+            res.writeHead(400);
+            return res.end(JSON.stringify({ error: 'provider is required' }));
+        }
+        const providers = getProvidersConfig();
+        const provider = providers[providerName];
+
+        const baseUrl = (provider.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
+        const apiKey = provider.apiKey || '';
+        const modelsUrl = `${baseUrl}/models`;
+
+        // 使用 Node.js 内置 https/http 请求
+        const isHttps = modelsUrl.startsWith('https');
+        const httpModule = isHttps ? require('https') : require('http');
+        const urlObj = new URL(modelsUrl);
+
+        const options = {
+            hostname: urlObj.hostname,
+            port: urlObj.port || (isHttps ? 443 : 80),
+            path: urlObj.pathname + urlObj.search,
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
+        };
+
+        const proxyReq = httpModule.request(options, (proxyRes) => {
+            let data = '';
+            proxyRes.on('data', chunk => { data += chunk; });
+            proxyRes.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    const rawModels = json.data || json.models || (Array.isArray(json) ? json : []);
+                    const apiModels = rawModels.map(m => ({
+                        id: typeof m === 'string' ? m : (m.id || m.name || ''),
+                        name: typeof m === 'string' ? m : (m.id || m.name || ''),
+                        api: provider.api || 'openai-completions'
+                    })).filter(m => m.id);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ api_models: apiModels }));
+                } catch (e) {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: 'Failed to parse remote response', raw: data.substring(0, 200) }));
+                }
+            });
+        });
+
+        proxyReq.on('error', (e) => {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: e.message }));
+        });
+        proxyReq.on('timeout', () => {
+            proxyReq.destroy();
+            res.writeHead(504);
+            res.end(JSON.stringify({ error: 'Request timeout' }));
+        });
+        proxyReq.end();
+    },
+
+    // 保存指定供应商的模型列表
+    '/api/save-models': (req, res) => {
+        if (req.method !== 'POST') {
+            res.writeHead(405);
+            return res.end(JSON.stringify({ error: 'Method not allowed' }));
+        }
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const { providerName, models } = JSON.parse(body);
+                if (!providerName) {
+                    res.writeHead(400);
+                    return res.end(JSON.stringify({ error: 'providerName is required' }));
+                }
+                const providers = getProvidersConfig();
+                if (!providers[providerName]) {
+                    res.writeHead(404);
+                    return res.end(JSON.stringify({ error: `Provider "${providerName}" not found` }));
+                }
+                providers[providerName].models = models || [];
+                if (saveProvidersConfig(providers)) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, message: `Saved ${(models || []).length} models for "${providerName}" to providers.json.` }));
+                } else {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: 'Failed to save providers' }));
+                }
+            } catch (e) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Invalid JSON: ' + e.message }));
+            }
+        });
+    },
+
+    // 沙箱级别读取与修改
+    '/api/sandbox': (req, res) => {
+        const config = getOpenClawConfig() || {};
+        if (req.method === 'GET') {
+            const level = (config.gateway && config.gateway.sandboxLevel) || 'full';
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ level }));
+        }
+        if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => {
+                try {
+                    const { level } = JSON.parse(body);
+                    if (!['full', 'allowlist', 'deny'].includes(level)) {
+                        res.writeHead(400);
+                        return res.end(JSON.stringify({ error: 'Invalid level. Use: full, allowlist, deny' }));
+                    }
+                    if (!config.gateway) config.gateway = {};
+                    config.gateway.sandboxLevel = level;
+                    if (saveOpenClawConfig(config)) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: true, level }));
+                    } else {
+                        res.writeHead(500);
+                        res.end(JSON.stringify({ error: 'Failed to save config' }));
+                    }
+                } catch (e) {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'Invalid JSON: ' + e.message }));
+                }
+            });
+            return;
+        }
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+    },
+
+    // 代理详情（SOUL.md 内容）
+    '/api/agent-detail': (req, res) => {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const agentId = url.searchParams.get('id');
+        if (!agentId) {
+            res.writeHead(400);
+            return res.end(JSON.stringify({ error: 'Missing agent id' }));
+        }
+        const config = getOpenClawConfig();
+        const configAgent = config && config.agents && config.agents.list && config.agents.list.find(a => a.id === agentId);
+        const agentDir = configAgent && configAgent.agentDir
+            ? configAgent.agentDir
+            : path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'agent');
+
+        const soulPaths = [
+            path.join(agentDir, 'SOUL.md'),
+            path.join(path.dirname(agentDir), 'SOUL.md'),
+            path.join(HOME_DIR, '.openclaw', 'workspace', 'SOUL.md')
+        ];
+
+        let description = null;
+        for (const sp of soulPaths) {
+            try {
+                if (fs.existsSync(sp)) {
+                    description = fs.readFileSync(sp, 'utf-8');
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ description }));
+    },
+
+    // 分配模型给代理
+    '/api/assign-model': (req, res) => {
+        if (req.method !== 'POST') {
+            res.writeHead(405);
+            return res.end(JSON.stringify({ error: 'Method not allowed' }));
+        }
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const { agentId, modelFullPath } = JSON.parse(body);
+                if (!agentId || !modelFullPath) {
+                    res.writeHead(400);
+                    return res.end(JSON.stringify({ error: 'agentId and modelFullPath are required' }));
+                }
+                const config = getOpenClawConfig() || {};
+                if (!config.agents) config.agents = {};
+                if (!config.agents.list) config.agents.list = [];
+                if (!config.agents.defaults) config.agents.defaults = {};
+                if (!config.agents.defaults.model) config.agents.defaults.model = {};
+
+                // 更新全局默认
+                if (agentId === 'main' || agentId === 'all') {
+                    config.agents.defaults.model.primary = modelFullPath;
+                }
+
+                if (agentId === 'all') {
+                    // 同步修改所有 Agent
+                    config.agents.list.forEach(agt => {
+                        agt.model = modelFullPath;
+                    });
+                } else {
+                    // 修改指定 Agent
+                    const agent = config.agents.list.find(a => a.id === agentId);
+                    if (agent) {
+                        agent.model = modelFullPath;
+                    } else if (agentId !== 'main' || config.agents.list.length > 0) {
+                        config.agents.list.push({ id: agentId, name: agentId, model: modelFullPath });
+                    }
+                }
+
+                if (saveOpenClawConfig(config)) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, message: `Model set to "${modelFullPath}".` }));
+                } else {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: 'Failed to save config' }));
+                }
+            } catch (e) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Invalid JSON: ' + e.message }));
+            }
+        });
+    },
+
+    // 获取 WebUI 地址
+    '/api/webui-url': (req, res) => {
+        const config = getOpenClawConfig() || {};
+        const port = (config.gateway && config.gateway.port) || 18789;
+        const token = (config.gateway && config.gateway.accessToken) || '';
+        const url = token
+            ? `http://localhost:${port}?token=${encodeURIComponent(token)}`
+            : `http://localhost:${port}`;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ url }));
+    },
+
+    // 检查版本升级
+    '/api/cmd/upgrade': (req, res) => {
+        const platform = os.platform();
+        const cmd = platform === 'win32' ? 'npm view openclaw version' : 'npm view openclaw version';
+        exec(cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (err) {
+                res.end(JSON.stringify({ success: false, error: err.message, stdout: stdout || '', stderr: stderr || '' }));
+            } else {
+                res.end(JSON.stringify({ success: true, stdout: stdout.trim(), stderr: stderr || '' }));
+            }
+        });
+    },
+
+    // 故障修复
+    '/api/cmd/doctor-fix': (req, res) => {
+        const platform = os.platform();
+        const cmd = platform === 'win32' ? 'openclaw.cmd doctor --fix' : 'openclaw doctor --fix';
+        exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: !err,
+                stdout: stdout || '',
+                stderr: stderr || '',
+                error: err ? err.message : null
+            }));
+        });
     }
 };
 
