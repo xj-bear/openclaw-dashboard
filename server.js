@@ -64,7 +64,21 @@ function getOpenClawConfig() {
 // 辅助方法：保存 config
 function saveOpenClawConfig(configObj) {
     try {
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(configObj, null, 2), 'utf-8');
+        const existing = getOpenClawConfig() || {};
+        
+        // 深度合并逻辑，确保不丢失 gateway, agents 等根节点
+        const merged = { ...existing, ...configObj };
+        
+        // 针对 gateway 内部字段也进行一层合并，防止 accessToken/port 被抹除
+        if (existing.gateway && configObj.gateway) {
+            merged.gateway = { ...existing.gateway, ...configObj.gateway };
+            // 处理 auth 嵌套对象
+            if (existing.gateway.auth && configObj.gateway.auth) {
+                merged.gateway.auth = { ...existing.gateway.auth, ...configObj.gateway.auth };
+            }
+        }
+
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf-8');
         return true;
     } catch (e) {
         console.error("Failed to save config:", e);
@@ -962,7 +976,10 @@ const apiHandlers = {
     '/api/webui-url': (req, res) => {
         const config = getOpenClawConfig() || {};
         const port = (config.gateway && config.gateway.port) || 18789;
-        const token = (config.gateway && config.gateway.accessToken) || '';
+        
+        // 兼容旧版 accessToken 和新版 auth.token 格式
+        const token = (config.gateway && (config.gateway.auth?.token || config.gateway.accessToken)) || '';
+        
         const url = token
             ? `http://localhost:${port}?token=${encodeURIComponent(token)}`
             : `http://localhost:${port}`;
