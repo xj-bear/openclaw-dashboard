@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const os = require('os');
+const net = require('net');
 
 // 统一的配置文件路径
 const HOME_DIR = os.homedir() || process.env.HOME || process.env.USERPROFILE || '/root';
@@ -398,6 +399,18 @@ const apiHandlers = {
             const config = getOpenClawConfig();
             if (config?.gateway?.port) gatewayPort = config.gateway.port;
         } catch (e) { }
+        
+        // 辅助检测端口连接性
+        const checkPort = (port) => {
+            return new Promise((resolve) => {
+                const socket = new net.Socket();
+                socket.setTimeout(500);
+                socket.once('connect', () => { socket.destroy(); resolve(true); });
+                socket.once('timeout', () => { socket.destroy(); resolve(false); });
+                socket.once('error', () => { socket.destroy(); resolve(false); });
+                socket.connect(port, '127.0.0.1');
+            });
+        };
 
         const finishResponse = (diskPercent, diskStr, finalCpuPercent, uptime) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -419,8 +432,14 @@ const apiHandlers = {
             let winDiskPercent = 0;
             let winDiskStr = "0 GB / 0 GB";
             let uptime = 0;
-            const psCmd = `powershell -Command "$p=(Get-CimInstance Win32_Processor).LoadPercentage; $v=Get-Volume -DriveLetter C; Write-Host $p; Write-Host $v.Size; Write-Host $v.SizeRemaining"`;
-            exec(psCmd, (err, stdout) => {
+            
+            // 获取 CPU, 磁盘负载
+            const psMetricsCmd = `powershell -Command "$p=(Get-CimInstance Win32_Processor).LoadPercentage; $v=Get-Volume -DriveLetter C; Write-Host $p; Write-Host $v.Size; Write-Host $v.SizeRemaining"`;
+            
+            // 尝试获取 OpenClaw 进程的真实 Uptime
+            const psUptimeCmd = `powershell -Command "$p=Get-Process -Name node | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -like '*gateway*' } | Sort-Object StartTime -Descending | Select-Object -First 1; if($p){ [int]((Get-Date) - $p.StartTime).TotalSeconds } else { 0 }"`;
+
+            exec(psMetricsCmd, (err, stdout) => {
                 if (!err && stdout) {
                     const lines = stdout.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
                     if (lines.length >= 3) {
@@ -433,7 +452,29 @@ const apiHandlers = {
                         }
                     }
                 }
-                finishResponse(winDiskPercent, winDiskStr, winCpuPercent, uptime);
+                
+                exec(psUptimeCmd, async (err2, stdout2) => {
+                    if (!err2 && stdout2) uptime = parseInt(stdout2.trim()) || 0;
+                    
+                    const isPortActive = await checkPort(gatewayPort);
+                    // 只有端口真正通了才认为网关是在线的 (Active)
+                    const finalUptime = isPortActive ? uptime : 0;
+                    const finalActivePort = isPortActive ? gatewayPort : null;
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        port: finalActivePort,
+                        uptime: finalUptime,
+                        cpuPercent: winCpuPercent,
+                        memPercent,
+                        memStr,
+                        diskPercent: winDiskPercent,
+                        diskStr: winDiskStr,
+                        activeAgents,
+                        totalAgents,
+                        isAlive: isPortActive
+                    }));
+                });
             });
         } else {
             exec('df -h / | tail -1', (err, stdout) => {
@@ -445,13 +486,30 @@ const apiHandlers = {
                         diskStr = `${parts[2]} / ${parts[1]}`;
                     }
                 }
-                exec('ps -eo etimes,args | grep -E "[o]penclaw.*gateway" | head -n 1', (err2, stdout2) => {
+                exec('ps -eo etimes,args | grep -E "[o]penclaw.*gateway" | head -n 1', async (err2, stdout2) => {
                     let uptime = 0;
                     if (!err2 && stdout2 && stdout2.trim()) {
                         const match = parseInt(stdout2.trim().split(/\s+/)[0]);
                         if (!isNaN(match)) uptime = match;
                     }
-                    finishResponse(diskPercent, diskStr, Math.min(100, Math.round((os.loadavg()[0] / os.cpus().length) * 100)), uptime);
+                    
+                    const isPortActive = await checkPort(gatewayPort);
+                    const finalUptime = isPortActive ? uptime : 0;
+                    const finalActivePort = isPortActive ? gatewayPort : null;
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        port: finalActivePort,
+                        uptime: finalUptime,
+                        cpuPercent: Math.min(100, Math.round((os.loadavg()[0] / os.cpus().length) * 100)),
+                        memPercent,
+                        memStr,
+                        diskPercent,
+                        diskStr,
+                        activeAgents,
+                        totalAgents,
+                        isAlive: isPortActive
+                    }));
                 });
             });
         }
@@ -530,6 +588,32 @@ const apiHandlers = {
                 res.end(JSON.stringify({ error: 'Invalid JSON' }));
             }
         });
+    },
+
+    '/api/cmd/start': (req, res) => {
+        const platform = os.platform();
+        let cmd = '';
+        if (platform === 'win32') {
+            cmd = 'openclaw.cmd gateway run';
+        } else {
+            cmd = 'openclaw gateway run';
+        }
+
+        try {
+            // 在 Windows 下使用 shell: true，并直接调用，确保能够找到命令
+            const oc = exec(cmd, { 
+                detached: true, 
+                stdio: 'ignore',
+                shell: platform === 'win32' ? 'powershell' : true
+            });
+            oc.unref();
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Command "${cmd}" triggered.` }));
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: e.message }));
+        }
     },
 
     '/api/cmd/restart': (req, res) => {
@@ -913,6 +997,97 @@ const apiHandlers = {
                 error: err ? err.message : null
             }));
         });
+    },
+
+    // 启动网关
+    '/api/cmd/start': (req, res) => {
+        const platform = os.platform();
+        const cmd = platform === 'win32' ? 'openclaw.cmd gateway run' : 'openclaw gateway run';
+
+        try {
+            const oc = exec(cmd, {
+                detached: true,
+                stdio: 'ignore',
+                shell: true,
+                windowsHide: true
+            });
+            oc.unref();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: `Command "${cmd}" triggered.` }));
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+    },
+
+    // 重启网关
+    '/api/cmd/restart': (req, res) => {
+        const platform = os.platform();
+        if (platform === 'win32') {
+            const findCmd = 'wmic process where "commandline like \'%openclaw%\' and name like \'%node%\' and not commandline like \'%server.js%\'" get processid /format:list';
+            exec(findCmd, (err, stdout) => {
+                if (!err && stdout) {
+                    const pids = stdout.match(/ProcessId=(\d+)/g);
+                    if (pids) {
+                        pids.forEach(p => {
+                            const pid = p.split('=')[1];
+                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) {}
+                        });
+                    }
+                }
+                setTimeout(() => {
+                    const oc = exec('openclaw.cmd gateway run', { detached: true, stdio: 'ignore', shell: true, windowsHide: true });
+                    oc.unref();
+                    res.writeHead(200);
+                    res.end(JSON.stringify({ success: true, message: 'Windows restart triggered' }));
+                }, 1000);
+            });
+        } else {
+            exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', (err, stdout) => {
+                if (stdout && stdout.trim()) {
+                    stdout.split('\n').forEach(pid => {
+                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) {}
+                    });
+                }
+                setTimeout(() => {
+                    const oc = exec('openclaw gateway run', { detached: true, stdio: 'ignore', shell: true });
+                    oc.unref();
+                    res.writeHead(200);
+                    res.end(JSON.stringify({ success: true, message: 'Linux restart triggered' }));
+                }, 500);
+            });
+        }
+    },
+
+    // 停止网关（shutdown）
+    '/api/cmd/shutdown': (req, res) => {
+        const platform = os.platform();
+        if (platform === 'win32') {
+            const findCmd = 'wmic process where "commandline like \'%openclaw%\' and name like \'%node%\' and not commandline like \'%server.js%\'" get processid /format:list';
+            exec(findCmd, (err, stdout) => {
+                if (!err && stdout) {
+                    const pids = stdout.match(/ProcessId=(\d+)/g);
+                    if (pids) {
+                        pids.forEach(p => {
+                            const pid = p.split('=')[1];
+                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) {}
+                        });
+                    }
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, message: 'Shutdown triggered' }));
+            });
+        } else {
+            exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', (err, stdout) => {
+                if (stdout && stdout.trim()) {
+                    stdout.split('\n').forEach(pid => {
+                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) {}
+                    });
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, message: 'Shutdown triggered' }));
+            });
+        }
     }
 };
 

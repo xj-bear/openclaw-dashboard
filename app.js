@@ -8,6 +8,7 @@ const i18n = {
         active: '活跃中',
         quick_control: '快速控制',
         restart_gateway: '重启 OpenClaw',
+        start_gateway: '启动 OpenClaw',
         check_upgrade: '检查版本升级',
         stop_service: '停止服务',
         doctor_fix: '故障修复 (Doctor)',
@@ -36,6 +37,7 @@ const i18n = {
         active: 'Active',
         quick_control: 'Quick Controls',
         restart_gateway: 'Restart OpenClaw',
+        start_gateway: 'Start OpenClaw',
         check_upgrade: 'Check for Updates',
         stop_service: 'Stop Service',
         doctor_fix: 'Repair Config (Doctor)',
@@ -72,25 +74,29 @@ async function fetchSysHealth() {
         const res = await fetch('/api/sys-health');
         const portDisplay = document.getElementById('gatewayPortDisplay');
 
-        if (!res.ok) {
-            if (portDisplay) {
-                portDisplay.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> <span style="color:var(--accent-red)">Offline</span>`;
-            }
-            return;
-        }
-
         const data = await res.json();
+        const isOnline = !!data.port && data.isAlive;
 
-        if (data.port && portDisplay) {
-            portDisplay.innerHTML = `<i class="fa-solid fa-circle-check"></i> <span>${data.port} 活跃中</span>`;
+        if (portDisplay) {
+            if (isOnline) {
+                portDisplay.innerHTML = `<i class="fa-solid fa-circle-check"></i> <span>${data.port} 活跃中</span>`;
+                portDisplay.style.color = "var(--accent-green)";
+            } else {
+                portDisplay.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> <span style="color:var(--accent-red)">Offline (未检测到网关)</span>`;
+                portDisplay.style.color = "var(--accent-red)";
+            }
         }
 
         if (data.uptime !== undefined) {
             const up = data.uptime;
-            const d = Math.floor(up / (3600 * 24));
-            const h = Math.floor(up % (3600 * 24) / 3600);
-            const m = Math.floor(up % 3600 / 60);
-            document.getElementById('uptimeDisplay').innerText = `${d}d ${h}h ${m}m`;
+            if (up === 0 && !isOnline) {
+                document.getElementById('uptimeDisplay').innerText = `已停止`;
+            } else {
+                const d = Math.floor(up / (3600 * 24));
+                const h = Math.floor(up % (3600 * 24) / 3600);
+                const m = Math.floor(up % 3600 / 60);
+                document.getElementById('uptimeDisplay').innerText = `${d}d ${h}h ${m}m`;
+            }
         }
 
         // 更新 DOM (文本与进度条)
@@ -1169,6 +1175,7 @@ function triggerCommand(type) {
     window.pauseTerminalUpdate = Date.now(); // Pause normal log polling for 60s to read cmd output
 
     const messages = {
+        'start': '确定要启动 OpenClaw 网关核心吗？',
         'restart': '确定平滑重启 OpenClaw 网关主进程吗？',
         'upgrade': '即将扫描 NPM 仓库并获取最新 OpenClaw 版本。',
         'shutdown': '⚠️ 危险：确定要离线系统吗？所有子代理将被中断。',
@@ -1176,7 +1183,19 @@ function triggerCommand(type) {
     };
 
     if (confirm(messages[type])) {
-        if (type === 'restart') {
+        if (type === 'start') {
+            fetch('/api/cmd/start').then(res => res.json()).then(data => {
+                const terminal = document.getElementById('terminal-output');
+                terminal.innerHTML += `
+                    <div class="log-line">
+                        <span class="log-time">[${new Date().toLocaleTimeString()}]</span>
+                        <span class="log-success">[COMMAND]</span>
+                        <span style="color: var(--accent-green)">Start triggered. Success: ${data.success}</span>
+                    </div>
+                `;
+                terminal.scrollTop = terminal.scrollHeight;
+            });
+        } else if (type === 'restart') {
             fetch('/api/cmd/restart').then(res => res.json()).then(data => {
                 const terminal = document.getElementById('terminal-output');
                 terminal.innerHTML += `

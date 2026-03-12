@@ -68,6 +68,11 @@
                             <i class="fa-solid fa-gear"></i>
                         </button>
                     </div>
+                    <button class="cmd-btn"
+                        style="background: rgba(16, 185, 129, 0.4); border-color: rgba(16, 185, 129, 0.6);"
+                        onclick="triggerCommand('start')">
+                        <i class="fa-solid fa-play"></i> <span data-i18n="start_gateway">启动 OpenClaw</span>
+                    </button>
                     <button class="cmd-btn restart" onclick="triggerCommand('restart')"
                         title="警告：重启会重置通讯秘钥，可能导致原标签页报错认证失败！">
                         <i class="fa-solid fa-rotate"></i> <span data-i18n="restart_gateway">重启 OpenClaw</span>
