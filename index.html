@@ -152,6 +152,14 @@
                     </div>
                     <div>
                         <label
+                            style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block">API 协议类型</label>
+                        <select class="model-selector" id="new-provider-api-type" style="width:100%; padding: 8px 12px; font-size: 0.85rem;" onchange="onApiTypeChange()">
+                            <option value="openai-completions">OpenAI Compatible</option>
+                            <option value="anthropic">Anthropic Claude</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label
                             style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block"
                             data-i18n="provider_url">Base URL</label>
                         <input type="text" class="config-input" id="new-provider-url"

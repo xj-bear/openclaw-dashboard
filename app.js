@@ -252,12 +252,31 @@ function addProviderPrompt() {
     document.getElementById('new-provider-name').value = '';
     document.getElementById('new-provider-url').value = '';
     document.getElementById('new-provider-key').value = '';
+    document.getElementById('new-provider-api-type').value = 'openai-completions';
     document.getElementById('add-provider-modal').style.display = 'flex';
+}
+
+function onApiTypeChange() {
+    const apiType = document.getElementById('new-provider-api-type').value;
+    const urlInput = document.getElementById('new-provider-url');
+    if (apiType === 'anthropic') {
+        if (!urlInput.value || urlInput.value === 'https://api.openai.com/v1') {
+            urlInput.value = 'https://api.anthropic.com';
+            urlInput.placeholder = 'https://api.anthropic.com';
+        }
+    } else {
+        if (!urlInput.value || urlInput.value === 'https://api.anthropic.com') {
+            urlInput.value = '';
+            urlInput.placeholder = 'https://api.openai.com/v1';
+        }
+    }
 }
 
 async function confirmAddProvider() {
     const pName = document.getElementById('new-provider-name').value.trim();
-    const pUrl = document.getElementById('new-provider-url').value.trim() || 'https://api.openai.com/v1';
+    const pApiType = document.getElementById('new-provider-api-type').value;
+    const defaultUrl = pApiType === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1';
+    const pUrl = document.getElementById('new-provider-url').value.trim() || defaultUrl;
     const pKey = document.getElementById('new-provider-key').value.trim();
     
     // 增加数据校验
@@ -278,7 +297,7 @@ async function confirmAddProvider() {
                 providerName: pName,
                 baseUrl: pUrl,
                 apiKey: pKey,
-                apiType: 'openai-completions'
+                apiType: pApiType
             })
         });
         if (!resp.ok) {
@@ -312,15 +331,33 @@ async function testProviderConn() {
     btn.disabled = true;
 
     try {
-        const urlToHit = pUrl.endsWith('/') ? `${pUrl}models` : `${pUrl}/models`;
-        const res = await fetch(urlToHit, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${pKey}` }
-        });
+        const apiType = document.getElementById('new-provider-api-type').value;
+        const pName = document.getElementById('new-provider-name').value.trim() || 'temp_test';
+        
+        // --- 核心优化：不再从前端直接请求远端 API (会触发 CORS 拦截) ---
+        // 我们临时调用后端 discover-models 接口，它由 Node.js 发起请求，没有跨域问题。
+        // 为了保护用户当前的 Provider 配置，我们先用临时参数或现有的来测试。
+        
+        // 1. 如果已存在的 provider，直接用已有的。如果是新创建的（还没有保存），我们需要先传参。
+        // 但 discover-models 是基于后端已存的 provider 名的。
+        // 所以我们改为：测试连接时，后端并不需要 provider 名，而是直接传 URL / KEY。
+        // 
+        // 简化方案：由于用户通常是点击“连通性测试”确认后再点确定，
+        // 这里的最佳实践是直接调用一个通用的后端探测接口。
+        
+        // 修改策略：利用后端已有的 discover-models 逻辑，但支持动态传参测试。
+        const res = await fetch(`/api/discover-models?url=${encodeURIComponent(pUrl)}&key=${encodeURIComponent(pKey)}&api=${apiType}`);
+        
         if (res.ok) {
-            btn.innerHTML = '<i class="fa-solid fa-check" style="color:var(--accent-green)"></i> 成功';
+            const data = await res.json();
+            if (data.api_models && data.api_models.length > 0) {
+                btn.innerHTML = '<i class="fa-solid fa-check" style="color:var(--accent-green)"></i> 成功';
+            } else {
+                btn.innerHTML = '<i class="fa-solid fa-circle-info" style="color:var(--accent-blue)"></i> 连通但模型空';
+            }
         } else {
-            console.error("Connection test failed:", res.status, res.statusText);
+            const errData = await res.json().catch(() => ({}));
+            console.error("Connection test failed:", res.status, errData);
             btn.innerHTML = '<i class="fa-solid fa-xmark" style="color:var(--accent-red)"></i> 失败';
         }
     } catch (e) {

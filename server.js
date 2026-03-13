@@ -119,10 +119,10 @@ const apiHandlers = {
     '/api/agents': (req, res) => {
         const config = getOpenClawConfig();
         let agents = [];
-        if (config && config.agents && config.agents.list) {
+        if (config && config.agents && config.agents.list && config.agents.list.length > 0) {
             agents = JSON.parse(JSON.stringify(config.agents.list));
         } else {
-            // Fallback for modern OpenClaw/Windows default workspace
+            // Fallback for modern OpenClaw/Windows default workspace, or when agents.list is empty []
             agents = [{ id: 'main', name: 'Main Assistant', model: config?.agents?.defaults?.model?.primary || 'default' }];
         }
 
@@ -370,7 +370,7 @@ const apiHandlers = {
 
         try {
             const config = getOpenClawConfig();
-            if (config?.agents?.list) {
+            if (config?.agents?.list?.length > 0) {
                 totalAgents = config.agents.list.length;
                 config.agents.list.forEach(agt => {
                     let agentDir = agt.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agt.id, 'agent');
@@ -734,69 +734,137 @@ const apiHandlers = {
         }
     },
 
-    // 探测供应商可用模型
     '/api/discover-models': (req, res) => {
         const url = new URL(req.url, `http://${req.headers.host}`);
-        const providerName = url.searchParams.get('provider');
-        if (!providerName) {
-            res.writeHead(400);
-            return res.end(JSON.stringify({ error: 'provider is required' }));
-        }
-        const providers = getProvidersConfig();
-        const provider = providers[providerName];
 
-        const baseUrl = (provider.baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
-        const apiKey = provider.apiKey || '';
-        const modelsUrl = `${baseUrl}/models`;
+        const providerName = url.searchParams.get('provider');
+        
+        // 支持直接传 URL / KEY / API 进行实时测试探测 (解决前端 CORS 问题)
+        const qUrl = url.searchParams.get('url');
+        const qKey = url.searchParams.get('key');
+        const qApi = url.searchParams.get('api');
+
+        let baseUrl, apiKey, apiType;
+
+        if (qUrl && qKey) {
+            baseUrl = qUrl;
+            apiKey = qKey;
+            apiType = qApi || 'openai-completions';
+        } else if (providerName) {
+            const providers = getProvidersConfig();
+            const provider = providers[providerName];
+            if (!provider) {
+                res.writeHead(404);
+                return res.end(JSON.stringify({ error: 'provider not found' }));
+            }
+            baseUrl = provider.baseUrl || 'https://api.openai.com/v1';
+            apiKey = provider.apiKey || '';
+            apiType = provider.api || 'openai-completions';
+        } else {
+            res.writeHead(400);
+            return res.end(JSON.stringify({ error: 'provider or (url and key) is required' }));
+        }
+
+        const isAnthropic = apiType === 'anthropic';
+
+        // Anthropic 内置模型列表
+        const anthropicBuiltinModels = [
+            { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', api: 'anthropic' },
+            { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', api: 'anthropic' },
+            { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', api: 'anthropic' },
+            { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', api: 'anthropic' }
+        ];
+
+        const cleanUrl = baseUrl.replace(/\/$/, '');
+        const modelsUrl = isAnthropic 
+            ? (cleanUrl.includes('/v1') ? `${cleanUrl}/models` : `${cleanUrl}/v1/models`)
+            : `${cleanUrl}/models`;
+        
+        const headers = isAnthropic
+            ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
+            : { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
 
         // 使用 Node.js 内置 https/http 请求
         const isHttps = modelsUrl.startsWith('https');
         const httpModule = isHttps ? require('https') : require('http');
-        const urlObj = new URL(modelsUrl);
+        
+        const performRequest = (currentHeaders) => {
+            return new Promise((resolve, reject) => {
+                const urlObj = new URL(modelsUrl);
+                const options = {
+                    hostname: urlObj.hostname,
+                    port: urlObj.port || (isHttps ? 443 : 80),
+                    path: urlObj.pathname + urlObj.search,
+                    method: 'GET',
+                    headers: currentHeaders,
+                    timeout: 10000
+                };
 
-        const options = {
-            hostname: urlObj.hostname,
-            port: urlObj.port || (isHttps ? 443 : 80),
-            path: urlObj.pathname + urlObj.search,
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            timeout: 15000
+                const proxyReq = httpModule.request(options, (proxyRes) => {
+                    let data = '';
+                    proxyRes.on('data', chunk => { data += chunk; });
+                    proxyRes.on('end', () => {
+                        resolve({ status: proxyRes.statusCode, data });
+                    });
+                });
+
+                proxyReq.on('error', reject);
+                proxyReq.on('timeout', () => {
+                    proxyReq.destroy();
+                    reject(new Error('Request timeout'));
+                });
+                proxyReq.end();
+            });
         };
 
-        const proxyReq = httpModule.request(options, (proxyRes) => {
-            let data = '';
-            proxyRes.on('data', chunk => { data += chunk; });
-            proxyRes.on('end', () => {
-                try {
-                    const json = JSON.parse(data);
-                    const rawModels = json.data || json.models || (Array.isArray(json) ? json : []);
-                    const apiModels = rawModels.map(m => ({
-                        id: typeof m === 'string' ? m : (m.id || m.name || ''),
-                        name: typeof m === 'string' ? m : (m.id || m.name || ''),
-                        api: provider.api || 'openai-completions'
-                    })).filter(m => m.id);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ api_models: apiModels }));
-                } catch (e) {
-                    res.writeHead(500);
-                    res.end(JSON.stringify({ error: 'Failed to parse remote response', raw: data.substring(0, 200) }));
+        (async () => {
+            try {
+                let result = await performRequest(headers);
+                
+                // 兼容性回滚：如果 Anthropic x-api-key 失败，尝试 Bearer
+                if (isAnthropic && (result.status === 401 || result.status === 403)) {
+                    const fallbackHeaders = { 
+                        'Authorization': `Bearer ${apiKey}`, 
+                        'anthropic-version': '2023-06-01', 
+                        'Content-Type': 'application/json' 
+                    };
+                    try {
+                        const fallbackResult = await performRequest(fallbackHeaders);
+                        if (fallbackResult.status === 200) {
+                            result = fallbackResult;
+                        }
+                    } catch (e) {}
                 }
-            });
-        });
 
-        proxyReq.on('error', (e) => {
-            res.writeHead(500);
-            res.end(JSON.stringify({ error: e.message }));
-        });
-        proxyReq.on('timeout', () => {
-            proxyReq.destroy();
-            res.writeHead(504);
-            res.end(JSON.stringify({ error: 'Request timeout' }));
-        });
-        proxyReq.end();
+                // 处理模型数据
+                let finalModels = [];
+                try {
+                    const json = JSON.parse(result.data);
+                    const rawModels = json.data || json.models || (Array.isArray(json) ? json : []);
+                    finalModels = rawModels.map(m => ({
+                        id: typeof m === 'string' ? m : (m.id || m.name || ''),
+                        name: typeof m === 'string' ? m : (m.display_name || m.id || m.name || ''),
+                        api: apiType
+                    })).filter(m => m.id);
+                } catch (e) {}
+
+                // 如果没扫到模型，且是 Anthropic，返回内置列表
+                if (finalModels.length === 0 && isAnthropic) {
+                    finalModels = anthropicBuiltinModels;
+                }
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ api_models: finalModels }));
+            } catch (e) {
+                if (isAnthropic) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ api_models: anthropicBuiltinModels }));
+                } else {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: e.message }));
+                }
+            }
+        })();
     },
 
     // 保存指定供应商的模型列表
