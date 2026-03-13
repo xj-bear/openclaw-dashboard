@@ -14,23 +14,106 @@ const PROVIDERS_PATH = path.join(HOME_DIR, '.openclaw', 'providers.json');
 const DASHBOARD_DIR = __dirname;
 const PORT = 19010;
 
+// 辅助方法：解析 agents.defaults.models 中的内置提供商模型
+// 例如 "openrouter/openrouter/hunter-alpha" -> provider=openrouter, modelId=openrouter/hunter-alpha
+function getBuiltinProvidersFromConfig(openclawConfig) {
+    const builtinProviders = {};
+    try {
+        const agentModels = openclawConfig?.agents?.defaults?.models;
+        if (!agentModels || typeof agentModels !== 'object') return builtinProviders;
+
+        const addModel = (providerName, fullModelId) => {
+            if (!providerName || !fullModelId) return;
+
+            // 规范化 modelId：去掉开头的 providerName/ 前缀（如果有的话）
+            // 例如 openrouter/openrouter/hunter-alpha -> openrouter/hunter-alpha
+            //      openrouter/auto -> auto
+            let cleanModelId = fullModelId;
+            if (cleanModelId.startsWith(providerName + '/')) {
+                cleanModelId = cleanModelId.substring(providerName.length + 1);
+            }
+
+            if (!builtinProviders[providerName]) {
+                builtinProviders[providerName] = { models: [] };
+            }
+
+            const exists = builtinProviders[providerName].models.some(m => m.id === cleanModelId);
+            if (!exists) {
+                builtinProviders[providerName].models.push({
+                    id: cleanModelId,
+                    name: cleanModelId,
+                    api: 'openai-completions'
+                });
+            }
+        };
+
+        // 从 agents.defaults.models 中提取
+        for (const key of Object.keys(agentModels)) {
+            const slashIndex = key.indexOf('/');
+            if (slashIndex === -1) continue;
+            addModel(key.substring(0, slashIndex), key.substring(slashIndex + 1));
+        }
+
+        // 也从 fallbacks 中提取
+        const fallbacks = openclawConfig?.agents?.defaults?.model?.fallbacks;
+        if (Array.isArray(fallbacks)) {
+            for (const fb of fallbacks) {
+                const slashIndex = fb.indexOf('/');
+                if (slashIndex === -1) continue;
+                addModel(fb.substring(0, slashIndex), fb.substring(slashIndex + 1));
+            }
+        }
+    } catch (e) {
+        console.error("Failed to parse builtin providers:", e);
+    }
+    return builtinProviders;
+}
+
 // 辅助方法：读取并解析 providers.json
 function getProvidersConfig() {
     try {
+        const openclawConfig = getOpenClawConfig();
+        const explicitProviders = openclawConfig?.models?.providers || {};
+
+        // 从 providers.json 读取用户自定义的供应商
+        let userProviders = {};
         if (fs.existsSync(PROVIDERS_PATH)) {
             const raw = fs.readFileSync(PROVIDERS_PATH, 'utf-8');
             const parsed = JSON.parse(raw);
-            if (Object.keys(parsed).length > 0) return parsed;
+            if (Object.keys(parsed).length > 0) userProviders = parsed;
         }
-        
-        // 回退逻辑：从 openclaw.json 中读取
-        const openclawConfig = getOpenClawConfig();
-        if (openclawConfig && openclawConfig.models && openclawConfig.models.providers) {
-            console.log("Fallback: Loading providers from openclaw.json");
-            return openclawConfig.models.providers;
+
+        // 合并：providers.json > openclaw.json models.providers
+        const merged = { ...explicitProviders, ...userProviders };
+
+        // 从 agents.defaults.models / fallbacks 中提取内置提供商
+        const builtinProviders = getBuiltinProvidersFromConfig(openclawConfig);
+
+        // 将未在显式配置中的内置提供商合并进来
+        for (const [pname, pdata] of Object.entries(builtinProviders)) {
+            if (!merged[pname]) {
+                merged[pname] = {
+                    api: 'openai-completions',
+                    models: pdata.models,
+                    _builtin: true
+                };
+                console.log(`Built-in provider discovered: ${pname} (${pdata.models.length} models)`);
+            } else {
+                // 已存在，但合并可能缺失的模型
+                const existingIds = new Set((merged[pname].models || []).map(m => m.id || m));
+                for (const m of pdata.models) {
+                    if (!existingIds.has(m.id)) {
+                        merged[pname].models = merged[pname].models || [];
+                        merged[pname].models.push(m);
+                    }
+                }
+            }
         }
-        
-        return {};
+
+        if (Object.keys(merged).length > 0) return merged;
+
+        // 最终回退
+        return explicitProviders;
     } catch (e) {
         console.error("Failed to read providers:", e);
         return {};
