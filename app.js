@@ -259,7 +259,7 @@ function addProviderPrompt() {
 function onApiTypeChange() {
     const apiType = document.getElementById('new-provider-api-type').value;
     const urlInput = document.getElementById('new-provider-url');
-    if (apiType === 'anthropic') {
+    if (apiType === 'anthropic-messages') {
         if (!urlInput.value || urlInput.value === 'https://api.openai.com/v1') {
             urlInput.value = 'https://api.anthropic.com';
             urlInput.placeholder = 'https://api.anthropic.com';
@@ -275,7 +275,7 @@ function onApiTypeChange() {
 async function confirmAddProvider() {
     const pName = document.getElementById('new-provider-name').value.trim();
     const pApiType = document.getElementById('new-provider-api-type').value;
-    const defaultUrl = pApiType === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1';
+    const defaultUrl = pApiType === 'anthropic-messages' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1';
     const pUrl = document.getElementById('new-provider-url').value.trim() || defaultUrl;
     const pKey = document.getElementById('new-provider-key').value.trim();
     
@@ -526,7 +526,7 @@ function renderTransfer(skipRight = false) {
 function toggleVision(modelId, isChecked) {
     const target = transferState.left.find(m => m.id === modelId);
     if (target) {
-        target.isVision = isChecked;
+        // 不写入 isVision 字段（openclaw schema 不支持），改用 input 数组
         if (!target.input) target.input = ["text"];
 
         if (isChecked && !target.input.includes('image')) {

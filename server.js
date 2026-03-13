@@ -887,7 +887,12 @@ const apiHandlers = {
                     res.writeHead(404);
                     return res.end(JSON.stringify({ error: `Provider "${providerName}" not found` }));
                 }
-                providers[providerName].models = models || [];
+                // 过滤掉 openclaw schema 不支持的 isVision 字段，vision 能力由 input:["image"] 表达
+                const cleanedModels = (models || []).map(m => {
+                    const { isVision, ...rest } = m;
+                    return rest;
+                });
+                providers[providerName].models = cleanedModels;
                 if (saveProvidersConfig(providers)) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ success: true, message: `Saved ${(models || []).length} models for "${providerName}" to providers.json.` }));
