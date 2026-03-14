@@ -248,9 +248,13 @@
 
                 </div>
 
-                <div style="display:flex; justify-content:space-between; align-items: center; margin-top: 20px;">
-                    <span style="font-size: 0.8rem; color: var(--text-secondary);"><i
-                            class="fa-solid fa-circle-info"></i> 保存后左侧列表的模型将生效。</span>
+                <div style="display:flex; justify-content:space-between; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color);">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" class="config-input" id="manual-model-id" placeholder="手动录入模型 ID (如 kimi-for-coding)" style="width: 240px; padding: 6px 12px; font-size: 0.85rem;">
+                        <button class="cmd-btn" onclick="addManualModelToLeft()" style="padding: 6px 12px; font-size: 0.85rem; border-color: var(--accent-blue); color: var(--accent-blue);">
+                            <i class="fa-solid fa-plus"></i> 手动添加
+                        </button>
+                    </div>
                     <div style="display:flex; gap: 12px;">
                         <button class="cmd-btn" onclick="closeModelModal()">取消</button>
                         <button class="save-btn" onclick="submitTransferModels()">确认并保存</button>

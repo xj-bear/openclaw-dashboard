@@ -776,13 +776,26 @@ const apiHandlers = {
         ];
 
         const cleanUrl = baseUrl.replace(/\/$/, '');
-        const modelsUrl = isAnthropic 
-            ? (cleanUrl.includes('/v1') ? `${cleanUrl}/models` : `${cleanUrl}/v1/models`)
-            : `${cleanUrl}/models`;
+        let modelsUrl = '';
+        if (isAnthropic) {
+            // 对 Anthropic 协议进行特定的路径处理
+            if (cleanUrl.endsWith('/v1') || cleanUrl.includes('/v1/')) {
+                modelsUrl = cleanUrl.endsWith('/models') ? cleanUrl : `${cleanUrl}/models`;
+            } else {
+                modelsUrl = `${cleanUrl}/v1/models`;
+            }
+        } else {
+            modelsUrl = `${cleanUrl}/models`;
+        }
         
         const headers = isAnthropic
             ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
             : { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+        // 针对 Kimi 等云端接口增加 User-Agent 模拟，防止 403 拦截
+        if (modelsUrl.includes('kimi.com')) {
+            headers['User-Agent'] = 'Claude-Code/1.0.0';
+        }
 
         // 使用 Node.js 内置 https/http 请求
         const isHttps = modelsUrl.startsWith('https');
@@ -824,10 +837,10 @@ const apiHandlers = {
                 // 兼容性回滚：如果 Anthropic x-api-key 失败，尝试 Bearer
                 if (isAnthropic && (result.status === 401 || result.status === 403)) {
                     const fallbackHeaders = { 
-                        'Authorization': `Bearer ${apiKey}`, 
-                        'anthropic-version': '2023-06-01', 
-                        'Content-Type': 'application/json' 
+                        ...headers,
+                        'Authorization': `Bearer ${apiKey}`
                     };
+                    delete fallbackHeaders['x-api-key'];
                     try {
                         const fallbackResult = await performRequest(fallbackHeaders);
                         if (fallbackResult.status === 200) {

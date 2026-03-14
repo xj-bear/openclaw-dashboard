@@ -460,7 +460,8 @@ async function probeRemoteModels() {
         const apiModels = data.api_models || [];
 
         const leftIds = transferState.left.map(m => m.id);
-        transferState.right = apiModels.filter(m => !leftIds.includes(m.id));
+        const newModels = apiModels.filter(m => !leftIds.includes(m.id));
+        transferState.right = newModels;
         renderTransfer();
 
         const terminal = document.getElementById('terminal-output');
@@ -468,7 +469,7 @@ async function probeRemoteModels() {
             <div class="log-line">
                 <span class="log-time">[${new Date().toLocaleTimeString()}]</span>
                 <span class="log-success">[DISCOVERY]</span>
-                <span>${apiModels.length} models probe done for ${currentProviderForModels}.</span>
+                <span>Found ${apiModels.length} models (${newModels.length} new) for ${currentProviderForModels}.</span>
             </div>
         `;
         terminal.scrollTop = terminal.scrollHeight;
@@ -477,6 +478,28 @@ async function probeRemoteModels() {
     } finally {
         if (btn) btn.innerHTML = `<i class="fa-solid fa-radar"></i> 探测`;
     }
+}
+
+function addManualModelToLeft() {
+    const input = document.getElementById('manual-model-id');
+    const modelId = input.value.trim();
+    if (!modelId) return;
+
+    if (transferState.left.some(m => m.id === modelId)) {
+        alert('该模型已在列表中');
+        return;
+    }
+
+    const provider = providersData[currentProviderForModels];
+    const newModel = {
+        id: modelId,
+        name: modelId,
+        api: provider ? provider.api : 'openai-completions'
+    };
+
+    transferState.left.push(newModel);
+    input.value = '';
+    renderTransfer();
 }
 
 function renderTransfer(skipRight = false) {
