@@ -14,6 +14,31 @@ const PROVIDERS_PATH = path.join(HOME_DIR, '.openclaw', 'providers.json');
 const DASHBOARD_DIR = __dirname;
 const PORT = 19010;
 
+// 跨平台 PATH 注入：确保子进程能找到 node 和 openclaw 命令（修复 NVM 环境丢失问题）
+const nodeBinDir = path.dirname(process.execPath);
+const _pathsToAdd = [nodeBinDir];
+const _commonPaths = os.platform() === 'win32'
+    ? [path.join(process.env.APPDATA || '', 'npm')]
+    : [path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin'];
+_commonPaths.forEach(p => {
+    if (p && fs.existsSync(p) && !_pathsToAdd.includes(p)) _pathsToAdd.push(p);
+});
+process.env.PATH = [...new Set([..._pathsToAdd, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
+console.log(`[Dashboard] PATH injected: ${process.env.PATH}`);
+
+// 辅助方法：获取 openclaw 命令的绝对路径（兼容 NVM / .local/bin / Windows）
+function getOpenClawBinary() {
+    const binName = os.platform() === 'win32' ? 'openclaw.cmd' : 'openclaw';
+    const candidates = [
+        path.join(path.dirname(process.execPath), binName), // NVM bin dir
+        path.join(os.homedir(), '.local', 'bin', binName),  // .local/bin
+    ];
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+    }
+    return binName; // 回退：依赖 PATH 查找
+}
+
 // 辅助方法：读取并解析 providers.json
 function getProvidersConfig() {
     try {
@@ -22,14 +47,14 @@ function getProvidersConfig() {
             const parsed = JSON.parse(raw);
             if (Object.keys(parsed).length > 0) return parsed;
         }
-        
+
         // 回退逻辑：从 openclaw.json 中读取
         const openclawConfig = getOpenClawConfig();
         if (openclawConfig && openclawConfig.models && openclawConfig.models.providers) {
             console.log("Fallback: Loading providers from openclaw.json");
             return openclawConfig.models.providers;
         }
-        
+
         return {};
     } catch (e) {
         console.error("Failed to read providers:", e);
@@ -76,10 +101,10 @@ function getOpenClawConfig() {
 function saveOpenClawConfig(configObj) {
     try {
         const existing = getOpenClawConfig() || {};
-        
+
         // 深度合并逻辑，确保不丢失 gateway, agents 等根节点
         const merged = { ...existing, ...configObj };
-        
+
         // 针对 gateway 内部字段也进行一层合并，防止 accessToken/port 被抹除
         if (existing.gateway && configObj.gateway) {
             merged.gateway = { ...existing.gateway, ...configObj.gateway };
@@ -138,7 +163,7 @@ const apiHandlers = {
             try {
                 let agentDir = agent.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agent.id, 'agent');
                 let sessionDir = path.join(agentDir.endsWith(path.sep + 'agent') ? path.dirname(agentDir) : agentDir, 'sessions');
-                
+
                 if (!fs.existsSync(sessionDir)) {
                     sessionDir = path.join(HOME_DIR, '.openclaw', `workspace-${agent.id}`, 'agent', 'sessions');
                 }
@@ -149,7 +174,7 @@ const apiHandlers = {
                 if (!fs.existsSync(sessionDir) && agent.id === 'main') {
                     sessionDir = path.join(HOME_DIR, '.openclaw', 'workspace', 'sessions');
                 }
-                
+
                 if (!fs.existsSync(sessionDir)) return;
 
                 const allFiles = fs.readdirSync(sessionDir);
@@ -260,7 +285,7 @@ const apiHandlers = {
             }
             candidates.push(path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'agent', 'sessions'));
             candidates.push(path.join(HOME_DIR, '.openclaw', 'workspace', 'sessions'));
-            
+
             for (const dir of candidates) {
                 if (fs.existsSync(dir)) {
                     sessionDir = dir;
@@ -364,7 +389,7 @@ const apiHandlers = {
             if (files.some(f => f.endsWith('.lock'))) return 1;
             const now = Date.now();
             return files.filter(f => f.endsWith('.jsonl')).some(f => {
-                try { return (now - fs.statSync(path.join(dir, f)).mtimeMs < 120000); } catch(e) { return false; }
+                try { return (now - fs.statSync(path.join(dir, f)).mtimeMs < 120000); } catch (e) { return false; }
             }) ? 1 : 0;
         };
 
@@ -388,7 +413,7 @@ const apiHandlers = {
             const config = getOpenClawConfig();
             if (config?.gateway?.port) gatewayPort = config.gateway.port;
         } catch (e) { }
-        
+
         // 辅助检测端口连接性
         const checkPort = async (port) => {
             const hosts = ['127.0.0.1', '::1', 'localhost'];
@@ -435,10 +460,10 @@ const apiHandlers = {
             let winDiskPercent = 0;
             let winDiskStr = "0 GB / 0 GB";
             let uptime = 0;
-            
+
             // 获取 CPU, 磁盘负载
             const psMetricsCmd = `powershell -Command "$p=(Get-CimInstance Win32_Processor).LoadPercentage; $v=Get-Volume -DriveLetter C; Write-Host $p; Write-Host $v.Size; Write-Host $v.SizeRemaining"`;
-            
+
             // 尝试获取 OpenClaw 进程的真实 Uptime
             const psUptimeCmd = `powershell -Command "$p=Get-Process -Name node | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -like '*gateway*' } | Sort-Object StartTime -Descending | Select-Object -First 1; if($p){ [int]((Get-Date) - $p.StartTime).TotalSeconds } else { 0 }"`;
 
@@ -455,10 +480,10 @@ const apiHandlers = {
                         }
                     }
                 }
-                
+
                 exec(psUptimeCmd, async (err2, stdout2) => {
                     if (!err2 && stdout2) uptime = parseInt(stdout2.trim()) || 0;
-                    
+
                     const isPortActive = await checkPort(gatewayPort);
                     // 只有端口真正通了才认为网关是在线的 (Active)
                     const finalUptime = isPortActive ? uptime : 0;
@@ -495,7 +520,7 @@ const apiHandlers = {
                         const match = parseInt(stdout2.trim().split(/\s+/)[0]);
                         if (!isNaN(match)) uptime = match;
                     }
-                    
+
                     const isPortActive = await checkPort(gatewayPort);
                     const finalUptime = isPortActive ? uptime : 0;
                     const finalActivePort = isPortActive ? gatewayPort : null;
@@ -532,7 +557,7 @@ const apiHandlers = {
         const configAgent = config?.agents?.list?.find(a => a.id === agentId);
         let agentDir = configAgent?.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'agent');
         let sessionDir = path.join(agentDir.endsWith(path.sep + 'agent') ? path.dirname(agentDir) : agentDir, 'sessions');
-        
+
         if (!fs.existsSync(sessionDir)) {
             sessionDir = path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'agent', 'sessions');
         }
@@ -554,7 +579,7 @@ const apiHandlers = {
         const latestFile = files.sort((a, b) => fs.statSync(path.join(sessionDir, b)).mtimeMs - fs.statSync(path.join(sessionDir, a)).mtimeMs)[0];
         const content = fs.readFileSync(path.join(sessionDir, latestFile), 'utf-8');
         const lines = content.trim().split('\n').filter(l => l.trim()).slice(-limit);
-        
+
         const logs = lines.map(line => {
             try { return JSON.parse(line); } catch (e) { return { raw: line }; }
         });
@@ -604,13 +629,13 @@ const apiHandlers = {
 
         try {
             // 在 Windows 下使用 shell: true，并直接调用，确保能够找到命令
-            const oc = exec(cmd, { 
-                detached: true, 
+            const oc = exec(cmd, {
+                detached: true,
                 stdio: 'ignore',
                 shell: platform === 'win32' ? 'powershell' : true
             });
             oc.unref();
-            
+
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: `Command "${cmd}" triggered.` }));
         } catch (e) {
@@ -631,14 +656,15 @@ const apiHandlers = {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
                             try { process.kill(pid); } catch (e) {
-                                try { exec(`taskkill /F /PID ${pid}`); } catch (e2) {}
+                                try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
                             }
                         });
                     }
                 }
                 // Spawn new
                 setTimeout(() => {
-                    const oc = exec('openclaw.cmd gateway start', { detached: true, stdio: 'ignore' });
+                    const ocBin = getOpenClawBinary();
+                    const oc = exec(`${ocBin} gateway start`, { detached: true, stdio: 'ignore' });
                     oc.unref();
                     res.writeHead(200);
                     res.end(JSON.stringify({ success: true, message: 'Windows restart triggered' }));
@@ -648,11 +674,12 @@ const apiHandlers = {
             exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', (err, stdout) => {
                 if (stdout.trim()) {
                     stdout.split('\n').forEach(pid => {
-                        if (pid.trim()) try { process.kill(pid.trim(), 'SIGKILL'); } catch (e) {}
+                        if (pid.trim()) try { process.kill(pid.trim(), 'SIGKILL'); } catch (e) { }
                     });
                 }
                 setTimeout(() => {
-                    const oc = exec('openclaw gateway start', { detached: true, stdio: 'ignore' });
+                    const ocBin = getOpenClawBinary();
+                    const oc = exec(`${ocBin} gateway start`, { detached: true, stdio: 'ignore' });
                     oc.unref();
                     res.writeHead(200);
                     res.end(JSON.stringify({ success: true, message: 'Linux restart triggered' }));
@@ -738,7 +765,7 @@ const apiHandlers = {
         const url = new URL(req.url, `http://${req.headers.host}`);
 
         const providerName = url.searchParams.get('provider');
-        
+
         // 支持直接传 URL / KEY / API 进行实时测试探测 (解决前端 CORS 问题)
         const qUrl = url.searchParams.get('url');
         const qKey = url.searchParams.get('key');
@@ -787,7 +814,7 @@ const apiHandlers = {
         } else {
             modelsUrl = `${cleanUrl}/models`;
         }
-        
+
         const headers = isAnthropic
             ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
             : { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
@@ -800,7 +827,7 @@ const apiHandlers = {
         // 使用 Node.js 内置 https/http 请求
         const isHttps = modelsUrl.startsWith('https');
         const httpModule = isHttps ? require('https') : require('http');
-        
+
         const performRequest = (currentHeaders) => {
             return new Promise((resolve, reject) => {
                 const urlObj = new URL(modelsUrl);
@@ -833,10 +860,10 @@ const apiHandlers = {
         (async () => {
             try {
                 let result = await performRequest(headers);
-                
+
                 // 兼容性回滚：如果 Anthropic x-api-key 失败，尝试 Bearer
                 if (isAnthropic && (result.status === 401 || result.status === 403)) {
-                    const fallbackHeaders = { 
+                    const fallbackHeaders = {
                         ...headers,
                         'Authorization': `Bearer ${apiKey}`
                     };
@@ -846,7 +873,7 @@ const apiHandlers = {
                         if (fallbackResult.status === 200) {
                             result = fallbackResult;
                         }
-                    } catch (e) {}
+                    } catch (e) { }
                 }
 
                 // 处理模型数据
@@ -859,7 +886,7 @@ const apiHandlers = {
                         name: typeof m === 'string' ? m : (m.display_name || m.id || m.name || ''),
                         api: apiType
                     })).filter(m => m.id);
-                } catch (e) {}
+                } catch (e) { }
 
                 // 如果没扫到模型，且是 Anthropic，返回内置列表
                 if (finalModels.length === 0 && isAnthropic) {
@@ -985,7 +1012,7 @@ const apiHandlers = {
                     description = fs.readFileSync(sp, 'utf-8');
                     break;
                 }
-            } catch (e) {}
+            } catch (e) { }
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1051,10 +1078,10 @@ const apiHandlers = {
     '/api/webui-url': (req, res) => {
         const config = getOpenClawConfig() || {};
         const port = (config.gateway && config.gateway.port) || 18789;
-        
+
         // 兼容旧版 accessToken 和新版 auth.token 格式
         const token = (config.gateway && (config.gateway.auth?.token || config.gateway.accessToken)) || '';
-        
+
         const url = token
             ? `http://localhost:${port}?token=${encodeURIComponent(token)}`
             : `http://localhost:${port}`;
@@ -1079,7 +1106,8 @@ const apiHandlers = {
     // 故障修复
     '/api/cmd/doctor-fix': (req, res) => {
         const platform = os.platform();
-        const cmd = platform === 'win32' ? 'openclaw.cmd doctor --fix' : 'openclaw doctor --fix';
+        const ocBin = getOpenClawBinary();
+        const cmd = `${ocBin} doctor --fix`;
         exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
@@ -1094,7 +1122,8 @@ const apiHandlers = {
     // 启动网关
     '/api/cmd/start': (req, res) => {
         const platform = os.platform();
-        const cmd = platform === 'win32' ? 'openclaw.cmd gateway run' : 'openclaw gateway run';
+        const ocBin = getOpenClawBinary();
+        const cmd = `${ocBin} gateway run`;
 
         try {
             const oc = exec(cmd, {
@@ -1123,7 +1152,7 @@ const apiHandlers = {
                     if (pids) {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
-                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) {}
+                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
                         });
                     }
                 }
@@ -1138,7 +1167,7 @@ const apiHandlers = {
             exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', (err, stdout) => {
                 if (stdout && stdout.trim()) {
                     stdout.split('\n').forEach(pid => {
-                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) {}
+                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) { }
                     });
                 }
                 setTimeout(() => {
@@ -1162,7 +1191,7 @@ const apiHandlers = {
                     if (pids) {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
-                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) {}
+                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
                         });
                     }
                 }
@@ -1173,7 +1202,7 @@ const apiHandlers = {
             exec('ps -ef | grep "[o]penclaw.*gateway" | awk \'{print $2}\'', (err, stdout) => {
                 if (stdout && stdout.trim()) {
                     stdout.split('\n').forEach(pid => {
-                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) {}
+                        if (pid.trim()) try { process.kill(parseInt(pid.trim()), 'SIGKILL'); } catch (e) { }
                     });
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1211,7 +1240,7 @@ const server = http.createServer((req, res) => {
     }
 
     let filePath = path.join(DASHBOARD_DIR, pathname === '/' ? 'index.html' : pathname);
-    
+
     // 安全性检查
     if (!filePath.startsWith(DASHBOARD_DIR)) {
         res.writeHead(403);
