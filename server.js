@@ -24,7 +24,11 @@ _commonPaths.forEach(p => {
     if (p && fs.existsSync(p) && !_pathsToAdd.includes(p)) _pathsToAdd.push(p);
 });
 process.env.PATH = [...new Set([..._pathsToAdd, ...process.env.PATH.split(path.delimiter)])].join(path.delimiter);
+// 注入 OPENCLAW_HOME 以确保所有 CLI 调用（如技能安装）都归位到 ~/.openclaw
+process.env.OPENCLAW_HOME = path.join(HOME_DIR, '.openclaw');
+process.env.OPENCLAW_STATE_DIR = process.env.OPENCLAW_HOME;
 console.log(`[Dashboard] PATH injected: ${process.env.PATH}`);
+console.log(`[Dashboard] OPENCLAW_HOME set to: ${process.env.OPENCLAW_HOME}`);
 
 // 辅助方法：获取 openclaw 命令的绝对路径（兼容 NVM / .local/bin / Windows）
 function getOpenClawBinary() {
@@ -1089,16 +1093,42 @@ const apiHandlers = {
         res.end(JSON.stringify({ url }));
     },
 
-    // 检查版本升级
+    // 执行版本升级 (从检查升级改为真实升级)
     '/api/cmd/upgrade': (req, res) => {
         const platform = os.platform();
-        const cmd = platform === 'win32' ? 'npm view openclaw version' : 'npm view openclaw version';
-        exec(cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+        // 执行全局升级指令
+        const cmd = 'npm install -g openclaw';
+        console.log(`[Dashboard] 🍎 Initiating global upgrade...`);
+        console.log(`[Dashboard] CMD: ${cmd}`);
+        console.log(`[Dashboard] Environment: OPENCLAW_HOME=${process.env.OPENCLAW_HOME}`);
+        
+        exec(cmd, { 
+            timeout: 600000, // 增加超时到 10 分钟，防止下载慢
+            env: { 
+                ...process.env,
+                // 强制确保子进程看到这些变量
+                OPENCLAW_HOME: path.join(HOME_DIR, '.openclaw'),
+                OPENCLAW_STATE_DIR: path.join(HOME_DIR, '.openclaw')
+            }
+        }, (err, stdout, stderr) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             if (err) {
-                res.end(JSON.stringify({ success: false, error: err.message, stdout: stdout || '', stderr: stderr || '' }));
+                console.error(`[Dashboard] ❌ Upgrade failed: ${err.message}`);
+                console.error(`[Dashboard] Exit Code: ${err.code}`);
+                res.end(JSON.stringify({ 
+                    success: false, 
+                    error: `Upgrade failed: ${err.message}`, 
+                    stdout: stdout || '', 
+                    stderr: stderr || '' 
+                }));
             } else {
-                res.end(JSON.stringify({ success: true, stdout: stdout.trim(), stderr: stderr || '' }));
+                console.log(`[Dashboard] ✅ Upgrade success!`);
+                res.end(JSON.stringify({ 
+                    success: true, 
+                    message: "OpenClaw 升级成功！请重启网关以应用更改。",
+                    stdout: stdout.trim(), 
+                    stderr: stderr || '' 
+                }));
             }
         });
     },

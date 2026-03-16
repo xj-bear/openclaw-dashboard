@@ -7,11 +7,19 @@ const serverPath = path.join(__dirname, '..', 'server.js');
 
 console.log("🚀 正在启动 OpenClaw Hub 后台服务...");
 
+// 统一注入环境变量，确保控制面板及其子进程识别正确的家目录
+const env = { 
+    ...process.env, 
+    OPENCLAW_HOME: path.join(require('os').homedir(), '.openclaw'),
+    OPENCLAW_STATE_DIR: path.join(require('os').homedir(), '.openclaw')
+};
+
 // 使用 process.execPath 获取当前这行代码赖以运行的精确 Node.js 二进制路径
 // spawn 派生子进程，detached: true 保证终端关闭后不退出
 const child = cp.spawn(process.execPath, [serverPath], {
     detached: true,
-    stdio: 'ignore' 
+    stdio: 'ignore',
+    env: env
 });
 
 // 解绑父子进程关系，让父进程（当前脚本）可以安心退出
