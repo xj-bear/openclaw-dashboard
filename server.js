@@ -547,50 +547,6 @@ const apiHandlers = {
         }
     },
 
-    '/api/agent-logs': (req, res) => {
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const agentId = url.searchParams.get('id');
-        const limit = parseInt(url.searchParams.get('limit') || '50');
-
-        if (!agentId) {
-            res.writeHead(400);
-            return res.end(JSON.stringify({ error: 'Missing agent id' }));
-        }
-
-        const config = getOpenClawConfig();
-        const configAgent = config?.agents?.list?.find(a => a.id === agentId);
-        let agentDir = configAgent?.agentDir || path.join(HOME_DIR, '.openclaw', 'agents', agentId, 'agent');
-        let sessionDir = path.join(agentDir.endsWith(path.sep + 'agent') ? path.dirname(agentDir) : agentDir, 'sessions');
-
-        if (!fs.existsSync(sessionDir)) {
-            sessionDir = path.join(HOME_DIR, '.openclaw', `workspace-${agentId}`, 'agent', 'sessions');
-        }
-        if (!fs.existsSync(sessionDir) && agentId === 'main') {
-            sessionDir = path.join(HOME_DIR, '.openclaw', 'workspace', 'sessions');
-        }
-
-        if (!fs.existsSync(sessionDir)) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify([]));
-        }
-
-        const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl') && !f.endsWith('.lock'));
-        if (files.length === 0) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            return res.end(JSON.stringify([]));
-        }
-
-        const latestFile = files.sort((a, b) => fs.statSync(path.join(sessionDir, b)).mtimeMs - fs.statSync(path.join(sessionDir, a)).mtimeMs)[0];
-        const content = fs.readFileSync(path.join(sessionDir, latestFile), 'utf-8');
-        const lines = content.trim().split('\n').filter(l => l.trim()).slice(-limit);
-
-        const logs = lines.map(line => {
-            try { return JSON.parse(line); } catch (e) { return { raw: line }; }
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(logs));
-    },
 
     '/api/config': (req, res) => {
         const config = getOpenClawConfig();
@@ -1096,8 +1052,12 @@ const apiHandlers = {
     // 执行版本升级 (从检查升级改为真实升级)
     '/api/cmd/upgrade': (req, res) => {
         const platform = os.platform();
-        // 执行全局升级指令
-        const cmd = 'npm install -g openclaw';
+        let cmd = 'npm install -g --force openclaw';
+        if (platform !== 'win32') {
+            // 执行全局升级指令，增加对 nvm 环境的支持，以解决 Node.js 18 无法升级的问题
+            cmd = 'bash -c "export NVM_DIR=\\"$HOME/.nvm\\"; [ -s \\"$NVM_DIR/nvm.sh\\" ] && . \\"$NVM_DIR/nvm.sh\\"; nvm use 22 >/dev/null 2>&1 || true; npm install -g --force openclaw"';
+        }
+
         console.log(`[Dashboard] 🍎 Initiating global upgrade...`);
         console.log(`[Dashboard] CMD: ${cmd}`);
         console.log(`[Dashboard] Environment: OPENCLAW_HOME=${process.env.OPENCLAW_HOME}`);
