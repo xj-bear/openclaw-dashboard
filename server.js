@@ -153,6 +153,43 @@ const apiHandlers = {
         });
     },
 
+    '/api/test-kimi': (req, res) => {
+        const https = require('https');
+        function testEndpoint(path, label) {
+          return new Promise((resolve) => {
+            const options = {
+              hostname: 'api.kimi.com',
+              path: path,
+              method: 'GET',
+              headers: {
+                'x-api-key': 'sk-kimi-4tj4JFjEz5Y3pItrTVCdfZiTRnU0WZDqjgdJo1DHg7Svlm9QOoPVb77RMOWdRvYw',
+                'anthropic-version': '2023-06-01',
+                'User-Agent': 'Claude-Code/1.0.0',
+                'Content-Type': 'application/json'
+              }
+            };
+            const reqUrl = https.request(options, (resp) => {
+              let data = '';
+              resp.on('data', chunk => { data += chunk; });
+              resp.on('end', () => { 
+                resolve({ label, status: resp.statusCode, body: data });
+              });
+            });
+            reqUrl.on('error', (e) => { resolve({ label, error: e.message }); });
+            reqUrl.end();
+          });
+        }
+        
+        Promise.all([
+          testEndpoint('/coding/models', 'Endpoint 1'),
+          testEndpoint('/v1/models', 'Endpoint 2'),
+          testEndpoint('/models', 'Endpoint 3')
+        ]).then(results => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(results, null, 2));
+        });
+    },
+
     // 获取代理列表与状态
     '/api/agents': (req, res) => {
         const config = getOpenClawConfig();
@@ -774,59 +811,24 @@ const apiHandlers = {
         const cleanUrl = baseUrl.replace(/\/$/, '');
         let modelsUrl = '';
         if (isAnthropic) {
-            // 对 Anthropic 协议进行特定的路径处理
+            // 对 Anthropic 协议进行特定的路径处理：
+            // - 若 URL 已包含 /v1（如 https://api.anthropic.com/v1），直接追加 /models
+            // - 若 URL 不含 /v1 但以标准 api.anthropic.com 结尾，补全 /v1/models
+            // - 其他情况（如 kimi: https://api.kimi.com/coding），直接追加 /models，不插入 /v1
             if (cleanUrl.endsWith('/v1') || cleanUrl.includes('/v1/')) {
                 modelsUrl = cleanUrl.endsWith('/models') ? cleanUrl : `${cleanUrl}/models`;
-            } else {
+            } else if (cleanUrl.match(/^https?:\/\/api\.anthropic\.com/)) {
+                // 官方 Anthropic 端点
                 modelsUrl = `${cleanUrl}/v1/models`;
+            } else {
+                // 自定义路径（如 kimi /coding、GLM /paas/v4 等），直接追加 /models
+                modelsUrl = `${cleanUrl}/models`;
             }
         } else {
             modelsUrl = `${cleanUrl}/models`;
         }
 
-        const headers = isAnthropic
-            ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
-            : { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
-
-        // 针对 Kimi 等云端接口增加 User-Agent 模拟，防止 403 拦截
-        if (modelsUrl.includes('kimi.com')) {
-            headers['User-Agent'] = 'Claude-Code/1.0.0';
-        }
-
-        // 使用 Node.js 内置 https/http 请求
-        const isHttps = modelsUrl.startsWith('https');
-        const httpModule = isHttps ? require('https') : require('http');
-
-        const performRequest = (currentHeaders) => {
-            return new Promise((resolve, reject) => {
-                const urlObj = new URL(modelsUrl);
-                const options = {
-                    hostname: urlObj.hostname,
-                    port: urlObj.port || (isHttps ? 443 : 80),
-                    path: urlObj.pathname + urlObj.search,
-                    method: 'GET',
-                    headers: currentHeaders,
-                    timeout: 10000
-                };
-
-                const proxyReq = httpModule.request(options, (proxyRes) => {
-                    let data = '';
-                    proxyRes.on('data', chunk => { data += chunk; });
-                    proxyRes.on('end', () => {
-                        resolve({ status: proxyRes.statusCode, data });
-                    });
-                });
-
-                proxyReq.on('error', reject);
-                proxyReq.on('timeout', () => {
-                    proxyReq.destroy();
-                    reject(new Error('Request timeout'));
-                });
-                proxyReq.end();
-            });
-        };
-
-        (async () => {
+              (async () => {
             try {
                 let result = await performRequest(headers);
 
@@ -845,6 +847,12 @@ const apiHandlers = {
                     } catch (e) { }
                 }
 
+                // Kimi 这种根本不提供模型列表接口（或由于路径不对返回 Nginx html）会返回 404
+                // 我们直接抛出异常，让它进入 catch 走 existingProviderModels 的兜底逻辑
+                if (result.status !== 200) {
+                    throw new Error(`HTTP ${result.status}: ${result.data.substring(0, 100)}`);
+                }
+
                 // 处理模型数据
                 let finalModels = [];
                 try {
@@ -857,17 +865,26 @@ const apiHandlers = {
                     })).filter(m => m.id);
                 } catch (e) { }
 
-                // 如果没扫到模型，且是 Anthropic，返回内置列表
-                if (finalModels.length === 0 && isAnthropic) {
-                    finalModels = anthropicBuiltinModels;
+                // 兜底优先级：① provider 已配置模型 ② Claude 官方内置列表（仅官方 Anthropic）
+                if (finalModels.length === 0) {
+                    if (existingProviderModels.length > 0) {
+                        finalModels = existingProviderModels;
+                    } else if (isAnthropic) {
+                        finalModels = anthropicBuiltinModels;
+                    }
                 }
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ api_models: finalModels }));
             } catch (e) {
-                if (isAnthropic) {
+                // 网络异常或 404 时触发兜底返回面板配置中的已有模型
+                const fallbackModels = existingProviderModels.length > 0
+                    ? existingProviderModels
+                    : (isAnthropic ? anthropicBuiltinModels : []);
+
+                if (fallbackModels.length > 0) {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ api_models: anthropicBuiltinModels }));
+                    res.end(JSON.stringify({ api_models: fallbackModels }));
                 } else {
                     res.writeHead(500);
                     res.end(JSON.stringify({ error: e.message }));
