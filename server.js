@@ -19,7 +19,12 @@ const nodeBinDir = path.dirname(process.execPath);
 const _pathsToAdd = [nodeBinDir];
 const _commonPaths = os.platform() === 'win32'
     ? [path.join(process.env.APPDATA || '', 'npm')]
-    : [path.join(os.homedir(), '.local', 'bin'), '/usr/local/bin', '/usr/bin'];
+    : [
+        path.join(os.homedir(), '.local', 'bin'), 
+        path.join(os.homedir(), '.npm-global', 'bin'),
+        '/usr/local/bin', 
+        '/usr/bin'
+      ];
 _commonPaths.forEach(p => {
     if (p && fs.existsSync(p) && !_pathsToAdd.includes(p)) _pathsToAdd.push(p);
 });
@@ -34,11 +39,15 @@ console.log(`[Dashboard] OPENCLAW_HOME set to: ${process.env.OPENCLAW_HOME}`);
 function getOpenClawBinary() {
     const binName = os.platform() === 'win32' ? 'openclaw.cmd' : 'openclaw';
     const candidates = [
-        path.join(path.dirname(process.execPath), binName), // NVM bin dir
-        path.join(os.homedir(), '.local', 'bin', binName),  // .local/bin
+        path.join(path.dirname(process.execPath), binName), // NVM / current node bin dir
+        path.join(os.homedir(), '.local', 'bin', binName),  // Linux ~/.local/bin
+        path.join(os.homedir(), '.npm-global', 'bin', binName), // npm-global 自定义 prefix
+        '/opt/homebrew/bin/' + binName,                     // macOS Homebrew (Apple Silicon)
+        '/usr/local/bin/' + binName,                        // macOS Homebrew (Intel) / Linux
+        path.join(process.env.APPDATA || '', 'npm', binName), // Windows APPDATA\npm
     ];
     for (const c of candidates) {
-        if (fs.existsSync(c)) return c;
+        if (c && fs.existsSync(c)) return c;
     }
     return binName; // 回退：依赖 PATH 查找
 }
@@ -752,7 +761,7 @@ const apiHandlers = {
             return res.end(JSON.stringify({ error: 'provider or (url and key) is required' }));
         }
 
-        const isAnthropic = apiType === 'anthropic';
+        const isAnthropic = apiType === 'anthropic' || apiType === 'anthropic-messages';
 
         // Anthropic 内置模型列表
         const anthropicBuiltinModels = [
@@ -1052,21 +1061,58 @@ const apiHandlers = {
     // 执行版本升级 (从检查升级改为真实升级)
     '/api/cmd/upgrade': (req, res) => {
         const platform = os.platform();
-        let cmd = 'npm install -g --force openclaw';
-        if (platform !== 'win32') {
-            // 执行全局升级指令，增加对 nvm 环境的支持，以解决 Node.js 18 无法升级的问题
-            cmd = 'bash -c "export NVM_DIR=\\"$HOME/.nvm\\"; [ -s \\"$NVM_DIR/nvm.sh\\" ] && . \\"$NVM_DIR/nvm.sh\\"; nvm use 22 >/dev/null 2>&1 || true; npm install -g --force openclaw"';
+        
+        // 构建跨平台升级命令
+        // 优先级：NVM 管理目录 -> 用户目录（无需 root） -> 全局（最后手段）
+        let cmd;
+        if (platform === 'win32') {
+            // Windows: 先尝试全局，失败则安装到 APPDATA\npm
+            cmd = `powershell -Command "
+              try {
+                npm install -g --force openclaw 2>&1;
+              } catch {
+                $env:npm_config_prefix = '$env:APPDATA\\npm';
+                New-Item -ItemType Directory -Force $env:APPDATA\\npm | Out-Null;
+                npm install --prefix $env:APPDATA\\npm --force openclaw 2>&1;
+              }
+            "`;
+        } else {
+            // Linux/macOS:
+            // - 若 prefix 在 /usr 或 /opt/homebrew （即需要 root 的系统目录），切换到 ~/.local 安装
+            // - macOS Homebrew 用户（prefix 在 /opt/homebrew）也强制切到用户目录，避免需要 sudo
+            // - 如果 prefix 已经在用户目录（~/.local, ~/.npm-global），直接全局安装
+            cmd = `bash -c '
+              export NVM_DIR="$HOME/.nvm";
+              [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh";
+              nvm use 22 >/dev/null 2>&1 || true;
+              NPM_PREFIX=$(npm prefix -g 2>/dev/null || echo "");
+              if echo "$NPM_PREFIX" | grep -qE "^/usr|^/opt/homebrew|^/opt/local"; then
+                INSTALL_DIR="$HOME/.local";
+                mkdir -p "$INSTALL_DIR/bin";
+                npm install --prefix "$INSTALL_DIR" --force openclaw 2>&1;
+                EXIT_CODE=$?;
+                if [ $EXIT_CODE -eq 0 ]; then
+                  BIN_PATH=$(ls "$INSTALL_DIR/lib/node_modules/.bin/openclaw" 2>/dev/null || ls "$INSTALL_DIR/node_modules/.bin/openclaw" 2>/dev/null || echo "");
+                  if [ -n "$BIN_PATH" ]; then
+                    ln -sf "$BIN_PATH" "$INSTALL_DIR/bin/openclaw";
+                    echo "[upgrade] Linked $BIN_PATH -> $INSTALL_DIR/bin/openclaw";
+                  fi;
+                  echo "[upgrade] Installed to $INSTALL_DIR/bin (user mode). Ensure $INSTALL_DIR/bin is in PATH.";
+                fi;
+                exit $EXIT_CODE;
+              else
+                npm install -g --force openclaw 2>&1;
+              fi
+            '`;
         }
 
-        console.log(`[Dashboard] 🍎 Initiating global upgrade...`);
-        console.log(`[Dashboard] CMD: ${cmd}`);
+        console.log(`[Dashboard] 🍎 Initiating upgrade (user-safe mode)...`);
         console.log(`[Dashboard] Environment: OPENCLAW_HOME=${process.env.OPENCLAW_HOME}`);
         
         exec(cmd, { 
             timeout: 600000, // 增加超时到 10 分钟，防止下载慢
             env: { 
                 ...process.env,
-                // 强制确保子进程看到这些变量
                 OPENCLAW_HOME: path.join(HOME_DIR, '.openclaw'),
                 OPENCLAW_STATE_DIR: path.join(HOME_DIR, '.openclaw')
             }
@@ -1085,7 +1131,7 @@ const apiHandlers = {
                 console.log(`[Dashboard] ✅ Upgrade success!`);
                 res.end(JSON.stringify({ 
                     success: true, 
-                    message: "OpenClaw 升级成功！请重启网关以应用更改。",
+                    message: "OpenClaw 升级成功！若命令找不到请确保 ~/.local/bin 在你的 PATH 中，或重启终端。",
                     stdout: stdout.trim(), 
                     stderr: stderr || '' 
                 }));
