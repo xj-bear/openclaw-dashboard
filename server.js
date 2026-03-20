@@ -153,43 +153,6 @@ const apiHandlers = {
         });
     },
 
-    '/api/test-kimi': (req, res) => {
-        const https = require('https');
-        function testEndpoint(path, label) {
-          return new Promise((resolve) => {
-            const options = {
-              hostname: 'api.kimi.com',
-              path: path,
-              method: 'GET',
-              headers: {
-                'x-api-key': 'sk-kimi-4tj4JFjEz5Y3pItrTVCdfZiTRnU0WZDqjgdJo1DHg7Svlm9QOoPVb77RMOWdRvYw',
-                'anthropic-version': '2023-06-01',
-                'User-Agent': 'Claude-Code/1.0.0',
-                'Content-Type': 'application/json'
-              }
-            };
-            const reqUrl = https.request(options, (resp) => {
-              let data = '';
-              resp.on('data', chunk => { data += chunk; });
-              resp.on('end', () => { 
-                resolve({ label, status: resp.statusCode, body: data });
-              });
-            });
-            reqUrl.on('error', (e) => { resolve({ label, error: e.message }); });
-            reqUrl.end();
-          });
-        }
-        
-        Promise.all([
-          testEndpoint('/coding/models', 'Endpoint 1'),
-          testEndpoint('/v1/models', 'Endpoint 2'),
-          testEndpoint('/models', 'Endpoint 3')
-        ]).then(results => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(results, null, 2));
-        });
-    },
-
     // 获取代理列表与状态
     '/api/agents': (req, res) => {
         const config = getOpenClawConfig();
@@ -755,6 +718,48 @@ const apiHandlers = {
         if (providers[name]) {
             delete providers[name];
             if (saveProvidersConfig(providers)) {
+                // 同步清理 openclaw.json 中该 provider 的所有残留模型引用
+                try {
+                    const openclawConfig = getOpenClawConfig();
+                    if (openclawConfig) {
+                        const prefix = name + '/';
+                        let changed = false;
+
+                        // 1. 清理 agents.defaults.models 中以该 provider 为前缀的别名
+                        if (openclawConfig.agents && openclawConfig.agents.defaults && openclawConfig.agents.defaults.models) {
+                            const modelAliases = openclawConfig.agents.defaults.models;
+                            Object.keys(modelAliases).forEach(key => {
+                                if (key.startsWith(prefix)) {
+                                    delete modelAliases[key];
+                                    changed = true;
+                                }
+                            });
+                        }
+
+                        // 2. 清理 agents.list 中 model 字段引用该 provider 的条目（重置为空，避免启动报错）
+                        if (openclawConfig.agents && Array.isArray(openclawConfig.agents.list)) {
+                            openclawConfig.agents.list.forEach(agent => {
+                                if (agent.model && agent.model.startsWith(prefix)) {
+                                    agent.model = '';
+                                    changed = true;
+                                }
+                            });
+                        }
+
+                        // 3. 清理 agents.defaults.model.primary 若引用该 provider
+                        if (openclawConfig.agents && openclawConfig.agents.defaults && openclawConfig.agents.defaults.model) {
+                            if (openclawConfig.agents.defaults.model.primary && openclawConfig.agents.defaults.model.primary.startsWith(prefix)) {
+                                openclawConfig.agents.defaults.model.primary = '';
+                                changed = true;
+                            }
+                        }
+
+                        if (changed) saveOpenClawConfig(openclawConfig);
+                    }
+                } catch (e) {
+                    console.error('Failed to clean up provider model references:', e);
+                }
+
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, message: `Provider "${name}" deleted from providers.json.` }));
             } else {
@@ -828,7 +833,61 @@ const apiHandlers = {
             modelsUrl = `${cleanUrl}/models`;
         }
 
-              (async () => {
+        // 读取当前 provider 已配置的模型列表（用于兜底）
+        let existingProviderModels = [];
+        try {
+            const providers = getProvidersConfig();
+            const providerKey = providerName || null;
+            if (providerKey && providers[providerKey] && Array.isArray(providers[providerKey].models)) {
+                existingProviderModels = providers[providerKey].models.map(m => ({
+                    id: typeof m === 'string' ? m : (m.id || m.name || ''),
+                    name: typeof m === 'string' ? m : (m.display_name || m.id || m.name || ''),
+                    api: apiType
+                })).filter(m => m.id);
+            }
+        } catch (e) { }
+
+        // 构建 HTTP 请求头
+        const headers = isAnthropic
+            ? {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json'
+              }
+            : {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+              };
+
+        // 用 Node.js 内置 http/https 模块发起 GET 请求（规避浏览器 CORS 限制）
+        const performRequest = (reqHeaders) => new Promise((resolve) => {
+            try {
+                const parsedUrl = new URL(modelsUrl);
+                const isHttps = parsedUrl.protocol === 'https:';
+                const transport = isHttps ? require('https') : require('http');
+                const options = {
+                    hostname: parsedUrl.hostname,
+                    port: parsedUrl.port || (isHttps ? 443 : 80),
+                    path: parsedUrl.pathname + parsedUrl.search,
+                    method: 'GET',
+                    headers: reqHeaders,
+                    timeout: 10000
+                };
+                let data = '';
+                const reqObj = transport.request(options, (resObj) => {
+                    resObj.setEncoding('utf-8');
+                    resObj.on('data', chunk => { data += chunk; });
+                    resObj.on('end', () => resolve({ status: resObj.statusCode, data }));
+                });
+                reqObj.on('timeout', () => { reqObj.destroy(); resolve({ status: 0, data: 'timeout' }); });
+                reqObj.on('error', (err) => resolve({ status: 0, data: err.message }));
+                reqObj.end();
+            } catch (e) {
+                resolve({ status: 0, data: e.message });
+            }
+        });
+
+        (async () => {
             try {
                 let result = await performRequest(headers);
 
@@ -847,37 +906,52 @@ const apiHandlers = {
                     } catch (e) { }
                 }
 
-                // Kimi 这种根本不提供模型列表接口（或由于路径不对返回 Nginx html）会返回 404
-                // 我们直接抛出异常，让它进入 catch 走 existingProviderModels 的兜底逻辑
-                if (result.status !== 200) {
-                    throw new Error(`HTTP ${result.status}: ${result.data.substring(0, 100)}`);
-                }
-
                 // 处理模型数据
                 let finalModels = [];
-                try {
-                    const json = JSON.parse(result.data);
-                    const rawModels = json.data || json.models || (Array.isArray(json) ? json : []);
-                    finalModels = rawModels.map(m => ({
-                        id: typeof m === 'string' ? m : (m.id || m.name || ''),
-                        name: typeof m === 'string' ? m : (m.display_name || m.id || m.name || ''),
-                        api: apiType
-                    })).filter(m => m.id);
-                } catch (e) { }
+                let hasError = false;
+                let errorMsg = '';
+                
+                if (result.status === 200) {
+                    try {
+                        const json = JSON.parse(result.data);
+                        const rawModels = json.data || json.models || (Array.isArray(json) ? json : []);
+                        finalModels = rawModels.map(m => ({
+                            id: typeof m === 'string' ? m : (m.id || m.name || ''),
+                            name: typeof m === 'string' ? m : (m.display_name || m.id || m.name || ''),
+                            api: apiType
+                        })).filter(m => m.id);
+                    } catch (e) {
+                        hasError = true;
+                        errorMsg = 'Invalid JSON response';
+                    }
+                } else {
+                    hasError = true;
+                    errorMsg = `HTTP ${result.status}`;
+                }
 
-                // 兜底优先级：① provider 已配置模型 ② Claude 官方内置列表（仅官方 Anthropic）
+                // 兜底优先级：① 扫出了模型 ② provider 已配置模型 ③ Claude 官方内置列表
                 if (finalModels.length === 0) {
                     if (existingProviderModels.length > 0) {
                         finalModels = existingProviderModels;
+                        hasError = false; // 已成功兜底，清除错误
                     } else if (isAnthropic) {
                         finalModels = anthropicBuiltinModels;
+                        hasError = false; // 已成功兜底，清除错误
                     }
                 }
 
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ api_models: finalModels }));
+                if (finalModels.length > 0) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ api_models: finalModels }));
+                } else if (hasError) {
+                    res.writeHead(500);
+                    res.end(JSON.stringify({ error: errorMsg }));
+                } else {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ api_models: [] }));
+                }
             } catch (e) {
-                // 网络异常或 404 时触发兜底返回面板配置中的已有模型
+                // 网络异常或彻底崩溃时触发最后的兜底
                 const fallbackModels = existingProviderModels.length > 0
                     ? existingProviderModels
                     : (isAnthropic ? anthropicBuiltinModels : []);
