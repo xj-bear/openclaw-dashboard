@@ -480,7 +480,7 @@ const apiHandlers = {
             // 尝试获取 OpenClaw 进程的真实 Uptime
             const psUptimeCmd = `powershell -Command "$p=Get-Process -Name node | Where-Object { $_.CommandLine -like '*openclaw*' -and $_.CommandLine -like '*gateway*' } | Sort-Object StartTime -Descending | Select-Object -First 1; if($p){ [int]((Get-Date) - $p.StartTime).TotalSeconds } else { 0 }"`;
 
-            exec(psMetricsCmd, (err, stdout) => {
+            exec(psMetricsCmd, { windowsHide: true }, (err, stdout) => {
                 if (!err && stdout) {
                     const lines = stdout.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
                     if (lines.length >= 3) {
@@ -494,7 +494,7 @@ const apiHandlers = {
                     }
                 }
 
-                exec(psUptimeCmd, async (err2, stdout2) => {
+                exec(psUptimeCmd, { windowsHide: true }, async (err2, stdout2) => {
                     if (!err2 && stdout2) uptime = parseInt(stdout2.trim()) || 0;
 
                     const isPortActive = await checkPort(gatewayPort);
@@ -601,6 +601,7 @@ const apiHandlers = {
             const oc = exec(cmd, {
                 detached: true,
                 stdio: 'ignore',
+                windowsHide: true,
                 shell: platform === 'win32' ? 'powershell' : true
             });
             oc.unref();
@@ -618,14 +619,14 @@ const apiHandlers = {
         if (platform === 'win32') {
             // Find and kill openclaw node processes
             const findCmd = 'wmic process where "commandline like \'%openclaw%\' and name like \'%node%\' and not commandline like \'%server.js%\'" get processid /format:list';
-            exec(findCmd, (err, stdout) => {
+            exec(findCmd, { windowsHide: true }, (err, stdout) => {
                 if (!err && stdout) {
                     const pids = stdout.match(/ProcessId=(\d+)/g);
                     if (pids) {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
                             try { process.kill(pid); } catch (e) {
-                                try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
+                                try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) { }
                             }
                         });
                     }
@@ -633,7 +634,7 @@ const apiHandlers = {
                 // Spawn new
                 setTimeout(() => {
                     const ocBin = getOpenClawBinary();
-                    const oc = exec(`${ocBin} gateway start`, { detached: true, stdio: 'ignore' });
+                    const oc = exec(`${ocBin} gateway start`, { detached: true, stdio: 'ignore', windowsHide: true });
                     oc.unref();
                     res.writeHead(200);
                     res.end(JSON.stringify({ success: true, message: 'Windows restart triggered' }));
@@ -1273,13 +1274,13 @@ const apiHandlers = {
         const platform = os.platform();
         if (platform === 'win32') {
             const findCmd = 'wmic process where "commandline like \'%openclaw%\' and name like \'%node%\' and not commandline like \'%server.js%\'" get processid /format:list';
-            exec(findCmd, (err, stdout) => {
+            exec(findCmd, { windowsHide: true }, (err, stdout) => {
                 if (!err && stdout) {
                     const pids = stdout.match(/ProcessId=(\d+)/g);
                     if (pids) {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
-                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
+                            try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) { }
                         });
                     }
                 }
@@ -1312,13 +1313,13 @@ const apiHandlers = {
         const platform = os.platform();
         if (platform === 'win32') {
             const findCmd = 'wmic process where "commandline like \'%openclaw%\' and name like \'%node%\' and not commandline like \'%server.js%\'" get processid /format:list';
-            exec(findCmd, (err, stdout) => {
+            exec(findCmd, { windowsHide: true }, (err, stdout) => {
                 if (!err && stdout) {
                     const pids = stdout.match(/ProcessId=(\d+)/g);
                     if (pids) {
                         pids.forEach(p => {
                             const pid = p.split('=')[1];
-                            try { exec(`taskkill /F /PID ${pid}`); } catch (e2) { }
+                            try { exec(`taskkill /F /PID ${pid}`, { windowsHide: true }); } catch (e2) { }
                         });
                     }
                 }

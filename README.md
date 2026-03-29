@@ -33,11 +33,22 @@ OpenClaw Dashboard 是一个专为 OpenClaw 开发的基于 Web 的增强型监�
 ### ⚡️ 面板管理与强制重启
 如果您修改了代码需要刷新，请执行：
 
+**Linux / macOS:**
 ```bash
 # 彻底杀死后台旧进程并按照生产环境重新启动服务
 lsof -ti:19010 | xargs -r kill -9 && openclaw-dash
 ```
 *注：`xargs -r` 确保在没找到进程时不报错，且直接使用 `openclaw-dash` 启动更符合您的日常习惯。*
+
+**Windows (PowerShell):**
+如果您是在命令行前台运行且未关闭窗口，可以直接按 `Ctrl + C` 停止，再重新执行 `openclaw-dash` 即可。
+
+如果是在后台静默运行中需要强制重启，请打开 PowerShell (建议管理员权限) 执行以下命令：
+```powershell
+# 强制杀死占用 19010 端口的旧进程并重启面板
+Get-NetTCPConnection -LocalPort 19010 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force }
+openclaw-dash
+```
 
 4. 访问面板：
    默认部署在局域网内，打开浏览器访问：
